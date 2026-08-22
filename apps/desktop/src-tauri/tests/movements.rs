@@ -46,6 +46,12 @@ fn movements_are_newest_first_with_stock_before_after_and_reversal_visibility() 
             [],
         )
         .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO welding_progress (id, session_id, component_key, side, part_id, required_quantity, taken_quantity) VALUES ('progress-1', 'session-1', 'R1', 'top', ?1, 2, 2)",
+            params![part.id],
+        )
+        .unwrap();
     db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side, created_at) VALUES ('m-old', ?1, 'session-1', 'adjust', 5, 'restock', 'R1', 'top', '2026-01-01T00:00:00.000Z')", params![part.id]).unwrap();
     db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side, created_at) VALUES ('m-take', ?1, 'session-1', 'consume', -2, 'welding take', 'R1', 'top', '2026-01-02T00:00:00.000Z')", params![part.id]).unwrap();
 
@@ -72,6 +78,31 @@ fn movements_are_newest_first_with_stock_before_after_and_reversal_visibility() 
     let movements = list_movements_service(&db).unwrap();
     assert_eq!(movements[1].id, "m-take");
     assert!(!movements[1].reversible);
+
+    db.connection()
+        .execute(
+            "INSERT INTO welding_sessions (id, bom_file_id, status) VALUES ('session-2', 'bom-1', 'completed')",
+            [],
+        )
+        .unwrap();
+    db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side, created_at) VALUES ('m-inactive', ?1, 'session-2', 'consume', -1, 'legacy take', 'R1', 'top', '2026-01-04T00:00:00.000Z')", params![part.id]).unwrap();
+    db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, created_at) VALUES ('m-malformed', ?1, 'session-1', 'consume', -1, 'legacy malformed', '2026-01-05T00:00:00.000Z')", params![part.id]).unwrap();
+
+    let movements = list_movements_service(&db).unwrap();
+    assert!(
+        !movements
+            .iter()
+            .find(|movement| movement.id == "m-inactive")
+            .unwrap()
+            .reversible
+    );
+    assert!(
+        !movements
+            .iter()
+            .find(|movement| movement.id == "m-malformed")
+            .unwrap()
+            .reversible
+    );
 }
 
 #[test]

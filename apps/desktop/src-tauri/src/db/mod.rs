@@ -79,8 +79,10 @@ impl Database {
         std::mem::replace(&mut self.connection, connection)
     }
 
-    pub(crate) fn into_connection(self) -> Connection {
-        self.connection
+    /// Replace the connection and path together when recovery moves the
+    /// database to a preserved path.
+    pub(crate) fn replace_database(&mut self, database: Database) -> Database {
+        std::mem::replace(self, database)
     }
 
     /// Start a transaction for an operation spanning multiple statements.

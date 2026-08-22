@@ -17,8 +17,15 @@ pub enum BackupError {
     Io(std::io::Error),
     Sqlite(rusqlite::Error),
     Invalid(String),
-    SchemaTooNew { found: i64, current: i64 },
-    FatalRecovery { primary: String, recovery: String },
+    SchemaTooNew {
+        found: i64,
+        current: i64,
+    },
+    FatalRecovery {
+        primary: String,
+        recovery: String,
+        recovery_path: String,
+    },
 }
 
 impl fmt::Display for BackupError {
@@ -31,9 +38,13 @@ impl fmt::Display for BackupError {
                 formatter,
                 "备份数据库版本 {found} 高于当前应用支持的版本 {current}"
             ),
-            Self::FatalRecovery { primary, recovery } => write!(
+            Self::FatalRecovery {
+                primary,
+                recovery,
+                recovery_path,
+            } => write!(
                 formatter,
-                "数据库恢复失败，原始文件已保留但需要人工处理。原始错误: {primary}；回滚错误: {recovery}"
+                "数据库恢复失败，原始文件已保留在 {recovery_path}，需要人工处理。原始错误: {primary}；回滚错误: {recovery}"
             ),
         }
     }
@@ -414,18 +425,20 @@ fn move_if_exists(source: &Path, destination: &Path) -> Result<bool, BackupError
     }
 }
 
-fn reopen_database(database: &mut Database, live_path: &Path) -> Result<(), BackupError> {
-    if !live_path.is_file() {
+fn open_verified_database(path: &Path) -> Result<Database, BackupError> {
+    if !path.is_file() {
         return Err(BackupError::Invalid(format!(
-            "原始数据库文件不存在: {}",
-            live_path.display()
+            "恢复数据库文件不存在: {}",
+            path.display()
         )));
     }
-    validate_backup(live_path)?;
-    let reopened = Database::open(live_path).map_err(BackupError::Sqlite)?;
-    let old_placeholder = database.replace_connection(reopened.into_connection());
-    drop(old_placeholder);
-    Ok(())
+    validate_backup(path)?;
+    Database::open(path).map_err(BackupError::Sqlite)
+}
+
+fn install_database(database: &mut Database, replacement: Database) {
+    let old_database = database.replace_database(replacement);
+    drop(old_database);
 }
 
 struct RestorePaths {
@@ -444,12 +457,27 @@ struct RestoreState {
     replacement_installed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreInjection {
+    None,
+    AfterSwap,
+    AfterOpen,
+    AfterOpenRollbackFailure,
+}
+
 impl RestorePaths {
-    fn rollback(&self, state: &RestoreState) -> Result<(), BackupError> {
+    fn rollback(
+        &self,
+        state: &RestoreState,
+        fail_after_replacement_cleanup: bool,
+    ) -> Result<(), BackupError> {
         if state.replacement_installed {
-            remove_if_exists(&self.live_path)?;
-            remove_if_exists(&self.live_wal)?;
             remove_if_exists(&self.live_shm)?;
+            remove_if_exists(&self.live_wal)?;
+            remove_if_exists(&self.live_path)?;
+            if fail_after_replacement_cleanup {
+                return Err(BackupError::Invalid("测试注入的回滚操作失败".into()));
+            }
         }
         if state.moved_shm {
             fs::rename(&self.previous_shm, &self.live_shm)?;
@@ -506,28 +534,97 @@ fn file_identity(path: &Path) -> Result<(u64, u64), BackupError> {
     ))
 }
 
+fn recovery_candidates(paths: &RestorePaths, state: &RestoreState) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if state.moved_live {
+        candidates.push(paths.previous_path.clone());
+    }
+    candidates.push(paths.live_path.clone());
+    if !state.moved_live {
+        candidates.push(paths.previous_path.clone());
+    }
+    candidates.dedup();
+    candidates
+}
+
+fn install_preserved_database(
+    database: &mut Database,
+    paths: &RestorePaths,
+    state: &RestoreState,
+    primary: &BackupError,
+    recovery: &BackupError,
+    fallback_source: &Path,
+) -> BackupError {
+    for candidate in recovery_candidates(paths, state) {
+        if let Ok(recovered) = open_verified_database(&candidate) {
+            let recovery_path = candidate.display().to_string();
+            install_database(database, recovered);
+            return BackupError::FatalRecovery {
+                primary: primary.to_string(),
+                recovery: recovery.to_string(),
+                recovery_path,
+            };
+        }
+    }
+
+    let fallback = paths
+        .live_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(".partnest-recovery-{}.db", new_id()));
+    if copy_database(fallback_source, &fallback).is_ok() {
+        if let Ok(recovered) = open_verified_database(&fallback) {
+            let recovery_path = fallback.display().to_string();
+            install_database(database, recovered);
+            return BackupError::FatalRecovery {
+                primary: primary.to_string(),
+                recovery: recovery.to_string(),
+                recovery_path,
+            };
+        }
+    }
+
+    BackupError::FatalRecovery {
+        primary: primary.to_string(),
+        recovery: recovery.to_string(),
+        recovery_path: fallback.display().to_string(),
+    }
+}
+
 fn recover_after_failure(
     database: &mut Database,
     paths: &RestorePaths,
     state: &RestoreState,
     primary: BackupError,
+    fail_after_replacement_cleanup: bool,
+    fallback_source: &Path,
 ) -> BackupError {
-    match paths
-        .rollback(state)
-        .and_then(|_| reopen_database(database, &paths.live_path))
-    {
-        Ok(()) => primary,
-        Err(recovery) => BackupError::FatalRecovery {
-            primary: primary.to_string(),
-            recovery: recovery.to_string(),
+    match paths.rollback(state, fail_after_replacement_cleanup) {
+        Ok(()) => match open_verified_database(&paths.live_path) {
+            Ok(recovered) => {
+                install_database(database, recovered);
+                primary
+            }
+            Err(recovery) => install_preserved_database(
+                database,
+                paths,
+                state,
+                &primary,
+                &recovery,
+                fallback_source,
+            ),
         },
+        Err(recovery) => {
+            install_preserved_database(database, paths, state, &primary, &recovery, fallback_source)
+        }
     }
 }
 
 fn restore_database_file_inner(
     database: &mut Database,
     selected_backup: impl AsRef<Path>,
-    fail_after_swap: bool,
+    injection: RestoreInjection,
 ) -> Result<(), BackupError> {
     let selected_backup = selected_backup.as_ref();
     let selected_canonical = fs::canonicalize(selected_backup)
@@ -582,18 +679,46 @@ fn restore_database_file_inner(
         moved_shm: false,
         replacement_installed: false,
     };
+    let fail_after_replacement_cleanup = injection == RestoreInjection::AfterOpenRollbackFailure;
 
     state.moved_live = match move_if_exists(&live_path, &previous_path) {
         Ok(moved) => moved,
-        Err(error) => return Err(recover_after_failure(database, &paths, &state, error)),
+        Err(error) => {
+            return Err(recover_after_failure(
+                database,
+                &paths,
+                &state,
+                error,
+                fail_after_replacement_cleanup,
+                &selected_canonical,
+            ))
+        }
     };
     state.moved_wal = match move_if_exists(&live_wal, &previous_wal) {
         Ok(moved) => moved,
-        Err(error) => return Err(recover_after_failure(database, &paths, &state, error)),
+        Err(error) => {
+            return Err(recover_after_failure(
+                database,
+                &paths,
+                &state,
+                error,
+                fail_after_replacement_cleanup,
+                &selected_canonical,
+            ))
+        }
     };
     state.moved_shm = match move_if_exists(&live_shm, &previous_shm) {
         Ok(moved) => moved,
-        Err(error) => return Err(recover_after_failure(database, &paths, &state, error)),
+        Err(error) => {
+            return Err(recover_after_failure(
+                database,
+                &paths,
+                &state,
+                error,
+                fail_after_replacement_cleanup,
+                &selected_canonical,
+            ))
+        }
     };
 
     if let Err(error) = fs::rename(&temporary, &live_path) {
@@ -602,15 +727,19 @@ fn restore_database_file_inner(
             &paths,
             &state,
             BackupError::Io(error),
+            fail_after_replacement_cleanup,
+            &selected_canonical,
         ));
     }
     state.replacement_installed = true;
-    if fail_after_swap {
+    if injection == RestoreInjection::AfterSwap {
         return Err(recover_after_failure(
             database,
             &paths,
             &state,
             BackupError::Invalid("测试注入的替换后打开失败".into()),
+            fail_after_replacement_cleanup,
+            &selected_canonical,
         ));
     }
 
@@ -622,21 +751,59 @@ fn restore_database_file_inner(
                 &paths,
                 &state,
                 BackupError::Sqlite(error),
+                fail_after_replacement_cleanup,
+                &selected_canonical,
             ))
         }
     };
-    if let Err(error) = validate_backup(&live_path) {
-        return Err(recover_after_failure(database, &paths, &state, error));
+    if matches!(
+        injection,
+        RestoreInjection::AfterOpen | RestoreInjection::AfterOpenRollbackFailure
+    ) {
+        drop(restored);
+        return Err(recover_after_failure(
+            database,
+            &paths,
+            &state,
+            BackupError::Invalid("测试注入的打开后失败".into()),
+            fail_after_replacement_cleanup,
+            &selected_canonical,
+        ));
     }
-    let old_placeholder = database.replace_connection(restored.into_connection());
-    drop(old_placeholder);
+    if let Err(error) = validate_backup(&live_path) {
+        drop(restored);
+        return Err(recover_after_failure(
+            database,
+            &paths,
+            &state,
+            error,
+            fail_after_replacement_cleanup,
+            &selected_canonical,
+        ));
+    }
+    install_database(database, restored);
 
-    let _ = remove_if_exists(&previous_path);
+    if let Err(error) = remove_if_exists(&previous_path) {
+        eprintln!(
+            "PartNest restore retained previous database {}: {error}",
+            previous_path.display()
+        );
+    }
     if state.moved_wal {
-        let _ = remove_if_exists(&previous_wal);
+        if let Err(error) = remove_if_exists(&previous_wal) {
+            eprintln!(
+                "PartNest restore retained previous WAL {}: {error}",
+                previous_wal.display()
+            );
+        }
     }
     if state.moved_shm {
-        let _ = remove_if_exists(&previous_shm);
+        if let Err(error) = remove_if_exists(&previous_shm) {
+            eprintln!(
+                "PartNest restore retained previous SHM {}: {error}",
+                previous_shm.display()
+            );
+        }
     }
     Ok(())
 }
@@ -646,7 +813,7 @@ pub fn restore_database_file(
     database: &mut Database,
     selected_backup: impl AsRef<Path>,
 ) -> Result<(), BackupError> {
-    restore_database_file_inner(database, selected_backup, false)
+    restore_database_file_inner(database, selected_backup, RestoreInjection::None)
 }
 
 /// Deterministic failure seam used by integration tests to exercise post-swap rollback.
@@ -654,5 +821,27 @@ pub fn restore_database_file_with_injected_failure(
     database: &mut Database,
     selected_backup: impl AsRef<Path>,
 ) -> Result<(), BackupError> {
-    restore_database_file_inner(database, selected_backup, true)
+    restore_database_file_inner(database, selected_backup, RestoreInjection::AfterSwap)
+}
+
+/// Deterministic failure seam used by integration tests to exercise the
+/// post-open candidate cleanup and rollback path.
+pub fn restore_database_file_with_injected_post_open_failure(
+    database: &mut Database,
+    selected_backup: impl AsRef<Path>,
+) -> Result<(), BackupError> {
+    restore_database_file_inner(database, selected_backup, RestoreInjection::AfterOpen)
+}
+
+/// Deterministic failure seam used by integration tests to exercise preserved
+/// recovery when a rollback operation itself fails.
+pub fn restore_database_file_with_injected_rollback_failure(
+    database: &mut Database,
+    selected_backup: impl AsRef<Path>,
+) -> Result<(), BackupError> {
+    restore_database_file_inner(
+        database,
+        selected_backup,
+        RestoreInjection::AfterOpenRollbackFailure,
+    )
 }

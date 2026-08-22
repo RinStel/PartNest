@@ -1,7 +1,9 @@
 use partnest_desktop_lib::{
     backup::{
         backup_dir, create_backup, maybe_create_startup_backup, restore_database_file,
-        restore_database_file_with_injected_failure, validate_backup, BackupError,
+        restore_database_file_with_injected_failure,
+        restore_database_file_with_injected_post_open_failure,
+        restore_database_file_with_injected_rollback_failure, validate_backup, BackupError,
         STARTUP_BACKUP_AGE,
     },
     db::{new_id, Database},
@@ -250,6 +252,79 @@ fn post_swap_open_failure_restores_the_original_file_and_connection() {
             .file_name()
             .to_string_lossy()
             .starts_with(".partnest-previous-")));
+}
+
+#[test]
+fn post_open_failure_restores_the_original_file_and_shared_database_connection() {
+    let root = tempdir().unwrap();
+    let source = seed_database(&root.path().join("source.db"));
+    let backup_path = create_backup(&source, root.path().join("backups")).unwrap();
+    drop(source);
+
+    let target_path = root.path().join("target.db");
+    let mut target = seed_database(&target_path);
+    target
+        .connection()
+        .execute("DELETE FROM inventory_movements", [])
+        .unwrap();
+    let result = restore_database_file_with_injected_post_open_failure(&mut target, &backup_path);
+    assert!(matches!(
+        result,
+        Err(BackupError::Invalid(message)) if message.contains("打开后")
+    ));
+    assert_eq!(target.path(), target_path.as_path());
+    assert_eq!(
+        target
+            .connection()
+            .query_row("SELECT COUNT(*) FROM inventory_movements", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(!root
+        .path()
+        .read_dir()
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".partnest-previous-")));
+}
+
+#[test]
+fn rollback_failure_keeps_a_preserved_recovery_database_queryable() {
+    let root = tempdir().unwrap();
+    let source = seed_database(&root.path().join("source.db"));
+    let backup_path = create_backup(&source, root.path().join("backups")).unwrap();
+    drop(source);
+
+    let target_path = root.path().join("target.db");
+    let mut target = seed_database(&target_path);
+    target
+        .connection()
+        .execute("DELETE FROM inventory_movements", [])
+        .unwrap();
+    let result = restore_database_file_with_injected_rollback_failure(&mut target, &backup_path);
+    let recovery_path = match result {
+        Err(BackupError::FatalRecovery { recovery_path, .. }) => {
+            std::path::PathBuf::from(recovery_path)
+        }
+        other => panic!("expected fatal recovery, got {other:?}"),
+    };
+    assert!(recovery_path.is_file());
+    assert_eq!(target.path(), recovery_path.as_path());
+    assert_eq!(count(&recovery_path, "inventory_movements"), 0);
+    assert_eq!(
+        target
+            .connection()
+            .query_row("SELECT COUNT(*) FROM inventory_movements", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(!sidecar(&target_path, "-wal").exists());
+    assert!(!sidecar(&target_path, "-shm").exists());
 }
 
 #[test]

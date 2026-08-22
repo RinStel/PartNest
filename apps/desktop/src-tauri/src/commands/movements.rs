@@ -37,6 +37,8 @@ struct RawMovement {
     session_id: Option<String>,
     component_key: Option<String>,
     side: Option<String>,
+    session_active: bool,
+    has_progress: bool,
     created_at: String,
     reverses_movement_id: Option<String>,
     has_reversal: bool,
@@ -53,7 +55,14 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
 
     let mut statement = db.connection().prepare(
         "SELECT m.id, m.part_id, p.name, m.movement_type, m.quantity, m.reason,
-                bf.display_name, m.session_id, m.component_key, m.side, m.created_at,
+                bf.display_name, m.session_id, m.component_key, m.side,
+                EXISTS(SELECT 1 FROM welding_sessions active_session
+                       WHERE active_session.id = m.session_id AND active_session.status = 'active'),
+                EXISTS(SELECT 1 FROM welding_progress progress
+                       WHERE progress.session_id = m.session_id
+                         AND progress.component_key = m.component_key
+                         AND progress.side = m.side),
+                m.created_at,
                 m.reverses_movement_id,
                 EXISTS(SELECT 1 FROM inventory_movements reversal
                        WHERE reversal.reverses_movement_id = m.id)
@@ -75,9 +84,11 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
             session_id: row.get(7)?,
             component_key: row.get(8)?,
             side: row.get(9)?,
-            created_at: row.get(10)?,
-            reverses_movement_id: row.get(11)?,
-            has_reversal: row.get(12)?,
+            session_active: row.get(10)?,
+            has_progress: row.get(11)?,
+            created_at: row.get(12)?,
+            reverses_movement_id: row.get(13)?,
+            has_reversal: row.get(14)?,
         })
     })?;
 
@@ -100,7 +111,19 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
         let reversible = movement.movement_type == "consume"
             && movement.quantity < 0
             && movement.reverses_movement_id.is_none()
-            && !movement.has_reversal;
+            && !movement.has_reversal
+            && movement.part_id.is_some()
+            && movement.part_name.is_some()
+            && movement.session_active
+            && movement
+                .component_key
+                .as_deref()
+                .is_some_and(|component_key| !component_key.trim().is_empty())
+            && movement
+                .side
+                .as_deref()
+                .is_some_and(|side| matches!(side, "top" | "bottom"))
+            && movement.has_progress;
         result.push(MovementView {
             id: movement.id,
             part_id: movement.part_id,
