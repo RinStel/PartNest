@@ -1,7 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { WeldingPage, type WeldingApi } from "./WeldingPage";
-import type { Part } from "../../app/tauri";
+import type { Part, ResolvedBomSelection } from "../../app/tauri";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+  convertFileSrc: vi.fn((path: string) => `asset://localhost/${encodeURIComponent(path)}`),
+}));
 
 afterEach(cleanup);
 
@@ -12,7 +18,7 @@ const part = (overrides: Partial<Part> = {}): Part => ({
 
 const session = {
   session_id: "session-1", bom_file_id: "file-1", original_name: "board.html", display_name: "board",
-  sha256: "hash", cache_name: "hash.html", cache_path: "file:///board.html", token: "token-1",
+  sha256: "hash", cache_name: "hash.html", cache_path: "C:\\Users\\test\\AppData\\Roaming\\PartNest\\interactive-bom-cache\\hash.html", token: "token-1",
   normalized: {
     source_name: "board.html",
     groups: [{ component_key: "C1", name: "10k", value: "10k", package: "0603", manufacturer: "Acme", mpn: "R-10K", lcsc_code: "C1", quantity: 3,
@@ -50,6 +56,14 @@ describe("WeldingPage", () => {
     await waitFor(() => expect(api.resolveBomSelection).toHaveBeenCalledWith("token-1", ["R1", "R2"]));
     expect(api.confirmTake).not.toHaveBeenCalled();
     expect(screen.getByText("R1, R2")).toBeInTheDocument();
+  });
+
+  it("converts the raw cached path through the production Tauri adapter", async () => {
+    const api = makeApi();
+    render(<WeldingPage api={api} />);
+    const frame = await screen.findByTitle("交互式 BOM");
+    expect(convertFileSrc).toHaveBeenCalledWith(session.cache_path);
+    expect(frame).toHaveAttribute("src", `asset://localhost/${encodeURIComponent(session.cache_path)}`);
   });
 
   it("uses the edited quantity only after explicit confirmation", async () => {
@@ -101,6 +115,9 @@ describe("WeldingPage", () => {
     fireEvent.mouseMove(document, { clientX: 250 });
     fireEvent.mouseUp(document);
     expect(screen.getByTestId("component-column")).toHaveStyle({ width: "330px" });
+    expect(screen.getByTestId("component-cell")).toHaveStyle({ width: "330px" });
+    fireEvent.keyDown(separator, { key: "ArrowLeft" });
+    expect(separator).toHaveAttribute("aria-valuenow", "322");
     view.unmount();
     render(<WeldingPage api={api} />);
     await screen.findByTitle("交互式 BOM");
@@ -119,6 +136,41 @@ describe("WeldingPage", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(api.resolveBomSelection).not.toHaveBeenCalled();
     frame.remove(); foreign.remove();
+  });
+
+  it("rejects invalid message shapes before resolving", async () => {
+    const api = makeApi();
+    render(<WeldingPage api={api} />);
+    const frame = await screen.findByTitle("交互式 BOM");
+    window.dispatchEvent(new MessageEvent("message", { source: (frame as HTMLIFrameElement).contentWindow, data: { type: "partnest:bom-selection", token: "token-1", designators: "R1" } }));
+    window.dispatchEvent(new MessageEvent("message", { source: (frame as HTMLIFrameElement).contentWindow, data: { type: "other", token: "token-1", designators: ["R1"] } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(api.resolveBomSelection).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stale bridge response after a newer selection", async () => {
+    const pending: Array<(selection: ResolvedBomSelection) => void> = [];
+    const api = makeApi({ resolveBomSelection: vi.fn((_token: string, designators: string[]) => new Promise<ResolvedBomSelection>((resolve) => pending.push(() => resolve({ session_id: "session-1", component_key: "C1", side: "top", designators })))) });
+    render(<WeldingPage api={api} />);
+    await screen.findByTitle("交互式 BOM");
+    selectInBom(["R1", "R2"]);
+    selectInBom(["R1"]);
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[0]({ session_id: "session-1", component_key: "C1", side: "top", designators: ["R1", "R2"] });
+    pending[1]({ session_id: "session-1", component_key: "C1", side: "top", designators: ["R1"] });
+    expect(await screen.findByText("当前选择：R1")).toBeInTheDocument();
+    expect(screen.queryByText("当前选择：R1, R2")).not.toBeInTheDocument();
+  });
+
+  it("ignores an in-flight bridge response after unmount", async () => {
+    let resolveSelection: ((selection: ResolvedBomSelection) => void) | undefined;
+    const api = makeApi({ resolveBomSelection: vi.fn(() => new Promise<ResolvedBomSelection>((resolve) => { resolveSelection = resolve; })) });
+    const view = render(<WeldingPage api={api} />);
+    await screen.findByTitle("交互式 BOM");
+    selectInBom(["R1"]);
+    await waitFor(() => expect(api.resolveBomSelection).toHaveBeenCalled());
+    view.unmount();
+    expect(() => resolveSelection?.({ session_id: "session-1", component_key: "C1", side: "top", designators: ["R1"] })).not.toThrow();
   });
 
   it("uses a scripts-only sandbox for the untrusted BOM", async () => {

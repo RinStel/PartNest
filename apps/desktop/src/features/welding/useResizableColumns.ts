@@ -28,5 +28,12 @@ export function useResizableColumns(defaults: Record<string, number>) {
     drag.current = { column, startX: event.clientX, startWidth: widths[column] ?? MIN_COLUMN_WIDTH };
   }
 
-  return { widths, startResize, minWidth: MIN_COLUMN_WIDTH, maxWidth: MAX_COLUMN_WIDTH };
+  function adjustWidth(column: string, delta: number) {
+    setWidths((previous) => ({
+      ...previous,
+      [column]: Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, (previous[column] ?? MIN_COLUMN_WIDTH) + delta)),
+    }));
+  }
+
+  return { widths, startResize, adjustWidth, minWidth: MIN_COLUMN_WIDTH, maxWidth: MAX_COLUMN_WIDTH };
 }

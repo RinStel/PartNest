@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export type Box = {
   id: string;
@@ -22,6 +22,16 @@ export type PartInput = {
 };
 
 export type Part = PartInput & { id: string; version: number };
+
+/** Converts the Rust cache PathBuf into a Tauri asset URL for webview loads. */
+export function cachedBomUrl(cachePath: string): string {
+  try {
+    return convertFileSrc(cachePath);
+  } catch {
+    // Browser-only tests and the static Vite preview have no Tauri internals.
+    return cachePath;
+  }
+}
 
 export type BomSide = "top" | "bottom";
 export type BomPlacement = { designator: string; side: BomSide | null; component_key: string };
