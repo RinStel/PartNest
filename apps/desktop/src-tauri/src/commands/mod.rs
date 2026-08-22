@@ -1,6 +1,8 @@
 pub mod bom;
 pub mod boxes;
+pub mod movements;
 pub mod parts;
+pub mod settings;
 pub mod welding;
 
 use serde::Serialize;
@@ -40,6 +42,19 @@ impl From<rusqlite::Error> for CommandError {
             }
         }
         Self::Database(error.to_string())
+    }
+}
+
+impl From<crate::backup::BackupError> for CommandError {
+    fn from(error: crate::backup::BackupError) -> Self {
+        match error {
+            crate::backup::BackupError::Invalid(message) => Self::Validation(message),
+            error @ crate::backup::BackupError::SchemaTooNew { .. } => {
+                Self::Validation(error.to_string())
+            }
+            crate::backup::BackupError::Io(error) => Self::Database(error.to_string()),
+            crate::backup::BackupError::Sqlite(error) => Self::Database(error.to_string()),
+        }
     }
 }
 

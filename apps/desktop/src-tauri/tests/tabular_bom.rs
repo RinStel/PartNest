@@ -5,9 +5,9 @@ use std::{
 };
 
 use partnest_desktop_lib::bom::tabular::inspect_tabular_bom;
-use partnest_desktop_lib::commands::bom::inspect_tabular_bom as inspect_tabular_bom_command;
 use partnest_desktop_lib::bom::tabular::TabularError;
 use partnest_desktop_lib::bom::types::ImportPreview;
+use partnest_desktop_lib::commands::bom::inspect_tabular_bom as inspect_tabular_bom_command;
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 

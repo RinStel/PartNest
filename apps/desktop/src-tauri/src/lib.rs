@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod bom;
 pub mod commands;
 pub mod db;
@@ -10,9 +11,13 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let database = Database::open_app_data_dir(&app_data_dir)?;
+            if let Err(error) = backup::maybe_create_startup_backup(&database, &app_data_dir) {
+                eprintln!("PartNest startup backup skipped: {error}");
+            }
             app.manage(Mutex::new(database));
             app.manage(Mutex::new(InteractiveBomRuntime::new(
                 app_data_dir.join("interactive-bom-cache"),
@@ -31,6 +36,9 @@ pub fn run() {
             commands::parts::create_part,
             commands::parts::update_part,
             commands::parts::adjust_stock,
+            commands::movements::list_movements,
+            commands::settings::create_backup,
+            commands::settings::restore_backup,
             commands::welding::confirm_take,
             commands::welding::reverse_take,
             commands::welding::get_welding_progress,

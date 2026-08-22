@@ -94,6 +94,25 @@ export type WeldingProgress = {
   status: string;
 };
 
+export type Movement = {
+  id: string;
+  part_id: string | null;
+  part_name: string | null;
+  component: string | null;
+  component_key: string | null;
+  movement_type: string;
+  delta: number;
+  quantity: number;
+  before_quantity: number | null;
+  after_quantity: number | null;
+  reason: string;
+  bom_display_name: string | null;
+  session_id: string | null;
+  created_at: string;
+  reverses_movement_id: string | null;
+  can_reverse: boolean;
+};
+
 export type DesktopApi = {
   listBoxes: () => Promise<Box[]>;
   createBox: (input: Pick<Box, "name" | "rows" | "cols">) => Promise<Box>;
@@ -105,7 +124,11 @@ export type DesktopApi = {
   restoreActiveInteractiveBom: () => Promise<CachedBomSession | null>;
   resolveBomSelection: (token: string, designators: string[]) => Promise<ResolvedBomSelection>;
   confirmTake: (input: ConfirmTakeInput) => Promise<TakeResult>;
+  reverseTake: (movementId: string) => Promise<TakeResult>;
   getWeldingProgress: (sessionId: string) => Promise<WeldingProgress[]>;
+  listMovements: () => Promise<Movement[]>;
+  createBackup: () => Promise<string>;
+  restoreBackup: (backupPath: string) => Promise<void>;
 };
 
 export const desktopApi: DesktopApi = {
@@ -119,7 +142,11 @@ export const desktopApi: DesktopApi = {
   restoreActiveInteractiveBom: () => invoke("restore_active_interactive_bom"),
   resolveBomSelection: (token, designators) => invoke("resolve_bom_selection", { token, designators }),
   confirmTake: (input) => invoke("confirm_take", { input }),
+  reverseTake: (movementId) => invoke("reverse_take", { movementId }),
   getWeldingProgress: (sessionId) => invoke("get_welding_progress", { sessionId }),
+  listMovements: () => invoke("list_movements"),
+  createBackup: () => invoke("create_backup"),
+  restoreBackup: (backupPath) => invoke("restore_backup", { backupPath }),
 };
 
 export function errorMessage(error: unknown): string {

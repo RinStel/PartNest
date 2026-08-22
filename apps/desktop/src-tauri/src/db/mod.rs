@@ -5,7 +5,7 @@ pub mod welding_repository;
 
 pub use models::{new_id, utc_now, BoxRecord, PartRecord};
 use rusqlite::{Connection, Result, Transaction, TransactionBehavior};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const INITIAL_MIGRATION: &str = include_str!("../../migrations/0001_initial.sql");
 const WELDING_MOVEMENT_METADATA_MIGRATION: &str =
@@ -21,13 +21,15 @@ pub struct Migration<'a> {
 /// An opened PartNest database connection.
 pub struct Database {
     connection: Connection,
+    path: PathBuf,
 }
 
 impl Database {
     /// Open a database file, configure SQLite, and apply all pending migrations.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let connection = Connection::open(path)?;
-        let mut database = Self { connection };
+        let path = path.as_ref().to_path_buf();
+        let connection = Connection::open(&path)?;
+        let mut database = Self { connection, path };
         database.configure()?;
         database.apply_migrations(&[
             Migration {
@@ -54,8 +56,9 @@ impl Database {
         path: impl AsRef<Path>,
         migrations: &[Migration<'_>],
     ) -> Result<Self> {
-        let connection = Connection::open(path)?;
-        let mut database = Self { connection };
+        let path = path.as_ref().to_path_buf();
+        let connection = Connection::open(&path)?;
+        let mut database = Self { connection, path };
         database.configure()?;
         database.apply_migrations(migrations)?;
         Ok(database)
@@ -64,6 +67,20 @@ impl Database {
     /// Borrow the underlying connection for commands and read-only queries.
     pub fn connection(&self) -> &Connection {
         &self.connection
+    }
+
+    /// Return the database file path used by this connection.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Replace the underlying connection while keeping the database path.
+    pub(crate) fn replace_connection(&mut self, connection: Connection) -> Connection {
+        std::mem::replace(&mut self.connection, connection)
+    }
+
+    pub(crate) fn into_connection(self) -> Connection {
+        self.connection
     }
 
     /// Start a transaction for an operation spanning multiple statements.
