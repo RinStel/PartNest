@@ -1,5 +1,7 @@
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { primaryRoutes, RoutePlaceholder } from "./routes";
+import { BoxesPage } from "../features/boxes/BoxesPage";
+import { InventoryPage } from "../features/inventory/InventoryPage";
 
 function Shell() {
   return (
@@ -21,7 +23,7 @@ export function App() {
       <Routes>
         <Route element={<Shell />}>
           <Route index element={<Navigate to="/inventory" replace />} />
-          {primaryRoutes.map((route) => <Route key={route.id} path={route.path} element={<RoutePlaceholder />} />)}
+          {primaryRoutes.map((route) => <Route key={route.id} path={route.path} element={route.id === "inventory" ? <InventoryPage /> : route.id === "boxes" ? <BoxesPage /> : <RoutePlaceholder />} />)}
         </Route>
       </Routes>
     </BrowserRouter>

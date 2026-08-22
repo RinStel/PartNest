@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root { font-family: system-ui, sans-serif; color: #17202a; background: #f7f8fa; }
 body { margin: 0; }
 .app-header { padding: 1rem 1.5rem; background: #17202a; color: white; }
