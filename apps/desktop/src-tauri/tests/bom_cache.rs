@@ -124,6 +124,26 @@ fn restores_active_session_with_new_token_after_runtime_restart() {
     );
 }
 
+#[test]
+fn resolver_authoritatively_rejects_oversized_direct_inputs() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache = InteractiveBomCache::new(&db, root.path().join("cache"));
+    let session = cache.cache_interactive_bom(fixture(), "Fixture").unwrap();
+    assert!(matches!(
+        cache.resolve_bom_selection(&"t".repeat(129), &["R1".into()]),
+        Err(BridgeError::TokenTooLong)
+    ));
+    assert!(matches!(
+        cache.resolve_bom_selection(&session.token, &vec!["R1".into(); 513]),
+        Err(BridgeError::TooManyDesignators)
+    ));
+    assert!(matches!(
+        cache.resolve_bom_selection(&session.token, &["".into()]),
+        Err(BridgeError::EmptyDesignator)
+    ));
+}
+
 fn hash(path: &Path) -> String {
     hex::encode(Sha256::digest(fs::read(path).unwrap()))
 }

@@ -102,6 +102,12 @@ fn bridge_rejects_oversized_messages_and_designators() {
         decode_selection_message(&"x".repeat(65 * 1024)),
         Err(BridgeError::MessageTooLarge)
     ));
+    assert!(matches!(
+        decode_selection_message(
+            r#"{"type":"partnest:bom-selection","token":"","designators":["R1"]}"#
+        ),
+        Err(BridgeError::EmptyToken)
+    ));
 }
 
 fn sha256(path: &Path) -> String {

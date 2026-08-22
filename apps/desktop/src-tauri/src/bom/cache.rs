@@ -1,7 +1,7 @@
 //! Immutable source caching and active interactive BOM session metadata.
 
 use super::{
-    bridge::{constant_time_eq, BridgeError, MAX_DESIGNATORS, MAX_DESIGNATOR_CHARS},
+    bridge::{constant_time_eq, validate_token_and_designators, BridgeError},
     interactive_html::InteractiveHtmlError,
     types::{BomSide, NormalizedBomDto},
 };
@@ -49,6 +49,7 @@ pub enum CacheError {
     Parse(InteractiveHtmlError),
     InvalidDisplayName,
     TamperedCache(String),
+    AtomicReplace(String),
 }
 impl fmt::Display for CacheError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -58,6 +59,7 @@ impl fmt::Display for CacheError {
             Self::Parse(error) => error.fmt(f),
             Self::InvalidDisplayName => f.write_str("display name cannot be empty"),
             Self::TamperedCache(reason) => write!(f, "cached BOM is invalid: {reason}"),
+            Self::AtomicReplace(reason) => write!(f, "cached BOM atomic replace failed: {reason}"),
         }
     }
 }
@@ -247,6 +249,7 @@ impl<'db> InteractiveBomCache<'db> {
         token: &str,
         designators: &[String],
     ) -> Result<ResolvedSelection, BridgeError> {
+        validate_token_and_designators(token, designators)?;
         let active = self
             .active
             .lock()
@@ -268,21 +271,10 @@ impl<'db> InteractiveBomCache<'db> {
         if !constant_time_eq(&active.token, token) {
             return Err(BridgeError::InvalidToken);
         }
-        if designators.is_empty() {
-            return Err(BridgeError::InvalidMessage(
-                "designators are required".into(),
-            ));
-        }
-        if designators.len() > MAX_DESIGNATORS {
-            return Err(BridgeError::TooManyDesignators);
-        }
         let mut group = None;
         let mut side = None;
         let mut unique = std::collections::HashSet::with_capacity(designators.len());
         for designator in designators {
-            if designator.chars().count() > MAX_DESIGNATOR_CHARS {
-                return Err(BridgeError::DesignatorTooLong);
-            }
             if !unique.insert(designator) {
                 return Err(BridgeError::DuplicateDesignator);
             }
@@ -403,34 +395,60 @@ impl<'db> InteractiveBomCache<'db> {
             new_id()
         ));
         fs::write(&temp, &expected)?;
-        match fs::rename(&temp, target) {
+        let _guard = TempFileGuard(temp.clone());
+        match atomic_replace(&temp, target) {
             Ok(()) => {}
             Err(_error)
                 if target.is_file()
                     && fs::read(target).ok().as_deref() == Some(expected.as_slice()) =>
             {
-                let _ = fs::remove_file(&temp);
+                // Another writer completed the same replacement.
             }
-            Err(_error) => {
-                if target.is_file() && fs::read(target).ok().as_deref() == Some(expected.as_slice())
-                {
-                    let _ = fs::remove_file(&temp);
-                } else {
-                    let _ = fs::remove_file(target);
-                    match fs::rename(&temp, target) {
-                        Ok(()) => {}
-                        Err(_error)
-                            if target.is_file()
-                                && fs::read(target).ok().as_deref()
-                                    == Some(expected.as_slice()) =>
-                        {
-                            let _ = fs::remove_file(&temp);
-                        }
-                        Err(error) => return Err(CacheError::Io(error)),
-                    }
-                }
-            }
+            Err(error) => return Err(CacheError::AtomicReplace(error.to_string())),
         }
+        Ok(())
+    }
+}
+
+struct TempFileGuard(PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(temp, target)
+}
+
+#[cfg(windows)]
+fn atomic_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
+    use std::{iter, os::windows::ffi::OsStrExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let temp = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        MoveFileExW(
+            temp.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
         Ok(())
     }
 }
@@ -490,4 +508,23 @@ pub fn random_token_is_uuid_v4(token: &str) -> bool {
     Uuid::parse_str(token)
         .map(|uuid| uuid.get_version_num() == 4)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::atomic_replace;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn atomic_replace_overwrites_existing_target_without_predelete() {
+        let directory = tempdir().unwrap();
+        let target = directory.path().join("target.html");
+        let temp = directory.path().join("target.tmp");
+        fs::write(&target, "valid-old").unwrap();
+        fs::write(&temp, "valid-new").unwrap();
+        atomic_replace(&temp, &target).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "valid-new");
+        assert!(!temp.exists());
+    }
 }

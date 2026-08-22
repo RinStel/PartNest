@@ -5,7 +5,8 @@ use std::{collections::HashSet, fmt};
 
 pub const MAX_SELECTION_JSON_BYTES: usize = 64 * 1024;
 pub const MAX_DESIGNATORS: usize = 512;
-pub const MAX_DESIGNATOR_CHARS: usize = 64;
+pub const MAX_TOKEN_BYTES: usize = 128;
+pub const MAX_DESIGNATOR_BYTES: usize = 64;
 
 pub const BRIDGE_VERSION: &str = "bridge-v1";
 
@@ -30,6 +31,9 @@ pub enum BridgeError {
     TooManyDesignators,
     DesignatorTooLong,
     MessageTooLarge,
+    EmptyToken,
+    TokenTooLong,
+    EmptyDesignator,
 }
 impl fmt::Display for BridgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -44,6 +48,9 @@ impl fmt::Display for BridgeError {
             Self::TooManyDesignators => f.write_str("too many selected designators"),
             Self::DesignatorTooLong => f.write_str("designator is too long"),
             Self::MessageTooLarge => f.write_str("BOM bridge message is too large"),
+            Self::EmptyToken => f.write_str("BOM bridge token is empty"),
+            Self::TokenTooLong => f.write_str("BOM bridge token is too long"),
+            Self::EmptyDesignator => f.write_str("designator is empty"),
         }
     }
 }
@@ -64,35 +71,46 @@ pub fn decode_selection_message(json: &str) -> Result<BomSelectionMessage, Bridg
             "unexpected message type".into(),
         ));
     }
-    if message.token.is_empty() || message.designators.is_empty() {
-        return Err(BridgeError::InvalidMessage(
-            "token and designators are required".into(),
-        ));
-    }
-    if message.designators.len() > MAX_DESIGNATORS {
-        return Err(BridgeError::TooManyDesignators);
-    }
-    if message
-        .designators
-        .iter()
-        .any(|designator| designator.trim() != designator || designator.is_empty())
-    {
-        return Err(BridgeError::InvalidMessage(
-            "designators must be non-empty and trimmed".into(),
-        ));
-    }
-    if message
-        .designators
-        .iter()
-        .any(|designator| designator.chars().count() > MAX_DESIGNATOR_CHARS)
-    {
-        return Err(BridgeError::DesignatorTooLong);
-    }
+    validate_token_and_designators(&message.token, &message.designators)?;
     let unique = message.designators.iter().collect::<HashSet<_>>();
     if unique.len() != message.designators.len() {
         return Err(BridgeError::InvalidMessage("duplicate designator".into()));
     }
     Ok(message)
+}
+
+pub(crate) fn validate_token_and_designators(
+    token: &str,
+    designators: &[String],
+) -> Result<(), BridgeError> {
+    if token.is_empty() {
+        return Err(BridgeError::EmptyToken);
+    }
+    if token.len() > MAX_TOKEN_BYTES {
+        return Err(BridgeError::TokenTooLong);
+    }
+    if designators.is_empty() {
+        return Err(BridgeError::InvalidMessage(
+            "designators are required".into(),
+        ));
+    }
+    if designators.len() > MAX_DESIGNATORS {
+        return Err(BridgeError::TooManyDesignators);
+    }
+    for designator in designators {
+        if designator.is_empty() {
+            return Err(BridgeError::EmptyDesignator);
+        }
+        if designator.trim() != designator {
+            return Err(BridgeError::InvalidMessage(
+                "designators must be trimmed".into(),
+            ));
+        }
+        if designator.len() > MAX_DESIGNATOR_BYTES {
+            return Err(BridgeError::DesignatorTooLong);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
