@@ -20,6 +20,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::bom::inspect_tabular_bom,
             commands::bom::cache_interactive_bom,
             commands::bom::resolve_bom_selection,
             commands::bom::restore_active_interactive_bom,

@@ -2,9 +2,19 @@ use crate::{
     bom::{
         bridge::BridgeError,
         cache::{CachedBomSession, InteractiveBomRuntime, ResolvedSelection},
+        tabular::inspect_tabular_bom as inspect_tabular_bom_file,
+        types::{FieldMapping, ImportPreview},
     },
     db::Database,
 };
+
+#[tauri::command(rename = "inspect_tabular_bom")]
+pub fn inspect_tabular_bom(
+    source_path: String,
+    mapping: Option<FieldMapping>,
+) -> Result<ImportPreview, String> {
+    inspect_tabular_bom_file(source_path, mapping.as_ref()).map_err(|error| error.to_string())
+}
 use std::sync::Mutex;
 use tauri::State;
 

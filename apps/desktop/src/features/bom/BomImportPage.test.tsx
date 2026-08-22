@@ -34,7 +34,8 @@ describe("BomImportPage", () => {
 
     const input = screen.getByLabelText("选择 BOM 文件");
     expect(input).toHaveAttribute("accept", ".html,.csv,.xlsx");
-    fireEvent.change(input, { target: { files: [new File([""], "board.txt")] } });
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    expect(pickFile).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("不支持的 BOM 格式"));
   });
 
@@ -42,7 +43,7 @@ describe("BomImportPage", () => {
     const inspectTabularBom = vi.fn().mockResolvedValue({ kind: "NeedsMapping" as const, headers: ["Part", "Qty"], suggestions: {} });
     const pickFile = vi.fn().mockResolvedValue("board.csv");
     render(<BomImportPage api={api({ inspectTabularBom })} pickFile={pickFile} />);
-    fireEvent.change(screen.getByLabelText("选择 BOM 文件"), { target: { files: [new File([""], "board.csv")] } });
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
     expect(await screen.findByText("字段映射")).toBeInTheDocument();
     const fields = screen.getAllByRole("combobox");
     fireEvent.change(fields[0], { target: { value: "Part" } });
@@ -54,7 +55,7 @@ describe("BomImportPage", () => {
     const cacheInteractiveBom = vi.fn().mockResolvedValue({ normalized: ready.bom });
     const apiMock = api({ cacheInteractiveBom });
     render(<BomImportPage api={apiMock} pickFile={vi.fn().mockResolvedValue("board.html")} />);
-    fireEvent.change(screen.getByLabelText("选择 BOM 文件"), { target: { files: [new File([""], "board.html")] } });
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
     expect(await screen.findByText("缺料分析")).toBeInTheDocument();
     expect(cacheInteractiveBom).toHaveBeenCalledWith("board.html", "board.html");
   });
@@ -74,7 +75,7 @@ describe("BomImportPage", () => {
       part({ id: "candidate-a", name: "red", lcsc_code: "", quantity: 1 }),
       part({ id: "candidate-b", name: "red", lcsc_code: "", quantity: 4 }),
     ]) })} pickFile={pickFile} />);
-    fireEvent.change(screen.getByLabelText("选择 BOM 文件"), { target: { files: [new File([""], "bom.csv")] } });
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
     expect(await screen.findByText("缺料分析")).toBeInTheDocument();
     expect(screen.getByText("精确匹配")).toBeInTheDocument();
     expect(screen.getByText("候选匹配")).toBeInTheDocument();
@@ -89,7 +90,7 @@ describe("BomImportPage", () => {
       bom: { source_name: "bom.csv", groups: [{ component_key: "candidate", name: "LED", value: "red", package: "0603", manufacturer: "", mpn: "", lcsc_code: "", quantity: 2, designators: ["D1"], placements: [], extra_fields: {} }] },
     });
     render(<BomImportPage api={api({ inspectTabularBom, listParts: vi.fn().mockResolvedValue([part({ id: "a", name: "red", lcsc_code: "" }), part({ id: "b", name: "red", lcsc_code: "" })]) })} pickFile={vi.fn().mockResolvedValue("bom.csv")} />);
-    fireEvent.change(screen.getByLabelText("选择 BOM 文件"), { target: { files: [new File([""], "bom.csv")] } });
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
     expect(await screen.findByText("候选匹配")).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "确认匹配" })[0]);
     await waitFor(() => expect(screen.queryByText("候选匹配")).not.toBeInTheDocument());

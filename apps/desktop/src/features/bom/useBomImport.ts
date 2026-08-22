@@ -9,6 +9,7 @@ export type FieldName = "quantity" | "designators" | "name" | "value" | "package
 export type FieldMapping = Partial<Record<FieldName, string>>;
 export type BomGroupDto = BomGroup & {
   component_key?: string;
+  lcsc_code?: string;
   quantity: number;
   designators?: string[];
   extra_fields?: Record<string, string>;
@@ -54,13 +55,25 @@ export const defaultPickFile = async (): Promise<string | null> => {
   return typeof selected === "string" ? selected : null;
 };
 
-function toPreview(value: any): ImportPreview {
-  if (value?.kind === "Ready" && value.bom) return value;
-  if (value?.kind === "NeedsMapping") return value;
-  if (value?.normalized) return { kind: "Ready", bom: value.normalized };
-  if (value?.Ready) return { kind: "Ready", bom: value.Ready };
-  if (value?.NeedsMapping) return { kind: "NeedsMapping", ...value.NeedsMapping };
-  return { kind: "Unsupported", message: value?.message };
+type PreviewPayload = {
+  kind?: "Ready" | "NeedsMapping";
+  bom?: NormalizedBomDto;
+  normalized?: NormalizedBomDto;
+  Ready?: NormalizedBomDto;
+  NeedsMapping?: { headers: string[]; suggestions: FieldMapping };
+  headers?: string[];
+  suggestions?: FieldMapping;
+  message?: string;
+};
+
+function toPreview(value: unknown): ImportPreview {
+  const payload = (value && typeof value === "object" ? value : {}) as PreviewPayload;
+  if (payload.kind === "Ready" && payload.bom) return { kind: "Ready", bom: payload.bom };
+  if (payload.kind === "NeedsMapping" && payload.headers && payload.suggestions) return { kind: "NeedsMapping", headers: payload.headers, suggestions: payload.suggestions };
+  if (payload.normalized) return { kind: "Ready", bom: payload.normalized };
+  if (payload.Ready) return { kind: "Ready", bom: payload.Ready };
+  if (payload.NeedsMapping) return { kind: "NeedsMapping", ...payload.NeedsMapping };
+  return { kind: "Unsupported", message: payload.message };
 }
 
 function normalizedGroup(group: BomGroupDto): BomGroup {
@@ -71,7 +84,7 @@ function normalizedGroup(group: BomGroupDto): BomGroup {
     package: group.package ?? "",
     manufacturer: group.manufacturer ?? "",
     mpn: group.mpn ?? "",
-    lcscCode: group.lcscCode ?? (group as any).lcsc_code ?? "",
+    lcscCode: group.lcscCode ?? group.lcsc_code ?? "",
     placements: group.placements ?? [],
     extraFields: group.extraFields ?? group.extra_fields ?? {},
   };

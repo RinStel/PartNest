@@ -2,6 +2,7 @@ import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from "react-rout
 import { primaryRoutes, RoutePlaceholder } from "./routes";
 import { BoxesPage } from "../features/boxes/BoxesPage";
 import { InventoryPage } from "../features/inventory/InventoryPage";
+import { BomImportPage } from "../features/bom/BomImportPage";
 
 function Shell() {
   return (
@@ -23,7 +24,7 @@ export function App() {
       <Routes>
         <Route element={<Shell />}>
           <Route index element={<Navigate to="/inventory" replace />} />
-          {primaryRoutes.map((route) => <Route key={route.id} path={route.path} element={route.id === "inventory" ? <InventoryPage /> : route.id === "boxes" ? <BoxesPage /> : <RoutePlaceholder />} />)}
+          {primaryRoutes.map((route) => <Route key={route.id} path={route.path} element={route.id === "inventory" ? <InventoryPage /> : route.id === "boxes" ? <BoxesPage /> : route.id === "bom" ? <BomImportPage /> : <RoutePlaceholder />} />)}
         </Route>
       </Routes>
     </BrowserRouter>
