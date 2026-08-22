@@ -74,11 +74,6 @@ impl Database {
         &self.path
     }
 
-    /// Replace the underlying connection while keeping the database path.
-    pub(crate) fn replace_connection(&mut self, connection: Connection) -> Connection {
-        std::mem::replace(&mut self.connection, connection)
-    }
-
     /// Replace the connection and path together when recovery moves the
     /// database to a preserved path.
     pub(crate) fn replace_database(&mut self, database: Database) -> Database {

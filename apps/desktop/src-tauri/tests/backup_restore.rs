@@ -2,6 +2,7 @@ use partnest_desktop_lib::{
     backup::{
         backup_dir, create_backup, maybe_create_startup_backup, restore_database_file,
         restore_database_file_with_injected_failure,
+        restore_database_file_with_injected_live_reopen_failure,
         restore_database_file_with_injected_post_open_failure,
         restore_database_file_with_injected_rollback_failure, validate_backup, BackupError,
         STARTUP_BACKUP_AGE,
@@ -58,6 +59,20 @@ fn sidecar(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     let mut name = path.file_name().unwrap().to_os_string();
     name.push(suffix);
     path.with_file_name(name)
+}
+
+fn recovery_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    root.read_dir()
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().is_some_and(|extension| extension == "db")
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".partnest-recovery-"))
+        })
+        .collect()
 }
 
 fn count(path: &std::path::Path, table: &str) -> i64 {
@@ -252,6 +267,7 @@ fn post_swap_open_failure_restores_the_original_file_and_connection() {
             .file_name()
             .to_string_lossy()
             .starts_with(".partnest-previous-")));
+    assert!(recovery_paths(root.path()).is_empty());
 }
 
 #[test]
@@ -290,6 +306,7 @@ fn post_open_failure_restores_the_original_file_and_shared_database_connection()
             .file_name()
             .to_string_lossy()
             .starts_with(".partnest-previous-")));
+    assert!(recovery_paths(root.path()).is_empty());
 }
 
 #[test]
@@ -313,6 +330,7 @@ fn rollback_failure_keeps_a_preserved_recovery_database_queryable() {
         other => panic!("expected fatal recovery, got {other:?}"),
     };
     assert!(recovery_path.is_file());
+    validate_backup(&recovery_path).unwrap();
     assert_eq!(target.path(), recovery_path.as_path());
     assert_eq!(count(&recovery_path, "inventory_movements"), 0);
     assert_eq!(
@@ -325,6 +343,42 @@ fn rollback_failure_keeps_a_preserved_recovery_database_queryable() {
     );
     assert!(!sidecar(&target_path, "-wal").exists());
     assert!(!sidecar(&target_path, "-shm").exists());
+    assert_eq!(recovery_paths(root.path()), vec![recovery_path]);
+}
+
+#[test]
+fn live_reopen_failure_keeps_the_verified_recovery_snapshot_queryable() {
+    let root = tempdir().unwrap();
+    let source = seed_database(&root.path().join("source.db"));
+    let backup_path = create_backup(&source, root.path().join("backups")).unwrap();
+    drop(source);
+
+    let target_path = root.path().join("target.db");
+    let mut target = seed_database(&target_path);
+    target
+        .connection()
+        .execute("DELETE FROM inventory_movements", [])
+        .unwrap();
+    let result = restore_database_file_with_injected_live_reopen_failure(&mut target, &backup_path);
+    let recovery_path = match result {
+        Err(BackupError::FatalRecovery { recovery_path, .. }) => {
+            std::path::PathBuf::from(recovery_path)
+        }
+        other => panic!("expected fatal recovery, got {other:?}"),
+    };
+    assert!(recovery_path.is_file());
+    validate_backup(&recovery_path).unwrap();
+    assert_eq!(target.path(), recovery_path.as_path());
+    assert_eq!(count(&recovery_path, "inventory_movements"), 0);
+    assert_eq!(
+        target
+            .connection()
+            .query_row("SELECT COUNT(*) FROM inventory_movements", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(recovery_paths(root.path()), vec![recovery_path]);
 }
 
 #[test]
@@ -344,6 +398,7 @@ fn restore_replaces_live_database_from_a_valid_backup() {
     restore_database_file(&mut target, &backup_path).unwrap();
     assert_eq!(count(&target_path, "inventory_movements"), 1);
     assert_eq!(count(&target_path, "welding_progress"), 1);
+    assert!(recovery_paths(root.path()).is_empty());
 }
 
 #[test]
