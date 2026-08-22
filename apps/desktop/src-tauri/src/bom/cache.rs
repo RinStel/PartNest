@@ -394,8 +394,8 @@ impl<'db> InteractiveBomCache<'db> {
                 .unwrap_or("bom"),
             new_id()
         ));
-        fs::write(&temp, &expected)?;
-        let _guard = TempFileGuard(temp.clone());
+        let _guard =
+            prepare_temp_with(&temp, &expected, |path, contents| fs::write(path, contents))?;
         match atomic_replace(&temp, target) {
             Ok(()) => {}
             Err(_error)
@@ -416,6 +416,15 @@ impl Drop for TempFileGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
     }
+}
+
+fn prepare_temp_with<F>(temp: &Path, contents: &[u8], writer: F) -> std::io::Result<TempFileGuard>
+where
+    F: FnOnce(&Path, &[u8]) -> std::io::Result<()>,
+{
+    let guard = TempFileGuard(temp.to_owned());
+    writer(temp, contents)?;
+    Ok(guard)
 }
 
 #[cfg(not(windows))]
@@ -513,6 +522,7 @@ pub fn random_token_is_uuid_v4(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::atomic_replace;
+    use super::prepare_temp_with;
     use std::fs;
     use tempfile::tempdir;
 
@@ -525,6 +535,18 @@ mod tests {
         fs::write(&temp, "valid-new").unwrap();
         atomic_replace(&temp, &target).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "valid-new");
+        assert!(!temp.exists());
+    }
+
+    #[test]
+    fn temp_guard_removes_partial_file_when_writer_fails() {
+        let directory = tempdir().unwrap();
+        let temp = directory.path().join("partial.tmp");
+        let result = prepare_temp_with(&temp, b"expected", |path, _| {
+            fs::write(path, b"partial")?;
+            Err(std::io::Error::other("injected write failure"))
+        });
+        assert!(result.is_err());
         assert!(!temp.exists());
     }
 }
