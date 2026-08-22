@@ -1,6 +1,7 @@
 pub mod bom;
 pub mod boxes;
 pub mod parts;
+pub mod welding;
 
 use serde::Serialize;
 use std::fmt;

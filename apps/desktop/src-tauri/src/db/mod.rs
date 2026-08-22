@@ -1,12 +1,15 @@
 //! SQLite connection and migration layer.
 
 mod models;
+pub mod welding_repository;
 
 pub use models::{new_id, utc_now, BoxRecord, PartRecord};
 use rusqlite::{Connection, Result, Transaction, TransactionBehavior};
 use std::path::Path;
 
 const INITIAL_MIGRATION: &str = include_str!("../../migrations/0001_initial.sql");
+const WELDING_MOVEMENT_METADATA_MIGRATION: &str =
+    include_str!("../../migrations/0002_welding_movement_metadata.sql");
 
 /// A versioned SQL migration. Migrations are applied in one exclusive transaction.
 #[derive(Debug, Clone, Copy)]
@@ -26,10 +29,16 @@ impl Database {
         let connection = Connection::open(path)?;
         let mut database = Self { connection };
         database.configure()?;
-        database.apply_migrations(&[Migration {
-            version: 1,
-            sql: INITIAL_MIGRATION,
-        }])?;
+        database.apply_migrations(&[
+            Migration {
+                version: 1,
+                sql: INITIAL_MIGRATION,
+            },
+            Migration {
+                version: 2,
+                sql: WELDING_MOVEMENT_METADATA_MIGRATION,
+            },
+        ])?;
         Ok(database)
     }
 

@@ -31,6 +31,9 @@ pub fn run() {
             commands::parts::create_part,
             commands::parts::update_part,
             commands::parts::adjust_stock,
+            commands::welding::confirm_take,
+            commands::welding::reverse_take,
+            commands::welding::get_welding_progress,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PartNest");

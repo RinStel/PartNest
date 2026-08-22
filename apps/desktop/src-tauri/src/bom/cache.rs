@@ -141,6 +141,52 @@ impl InteractiveBomRuntime {
         InteractiveBomCache::with_active(db, &self.cache_dir, self.active.clone())
             .restore_active_session()
     }
+
+    /// Validate the ownership captured by the active BOM bridge before a
+    /// welding transaction is allowed to mutate inventory.
+    pub fn validate_welding_selection(
+        &self,
+        db: &Database,
+        session_id: &str,
+        component_key: &str,
+        side: &BomSide,
+        designators: &[String],
+    ) -> Result<(), BridgeError> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| BridgeError::InactiveSession)?;
+        let active = active.as_ref().ok_or(BridgeError::InactiveSession)?;
+        if active.session_id != session_id {
+            return Err(BridgeError::InactiveSession);
+        }
+        let still_active = db
+            .connection()
+            .query_row(
+                "SELECT status FROM welding_sessions WHERE id = ?1",
+                [session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|status| status == "active")
+            .unwrap_or(false);
+        if !still_active {
+            return Err(BridgeError::InactiveSession);
+        }
+        validate_token_and_designators("welding-selection", designators)?;
+        for designator in designators {
+            let binding = active
+                .designators
+                .get(designator)
+                .ok_or(BridgeError::UnknownDesignator)?;
+            if binding.component_key != component_key {
+                return Err(BridgeError::CrossGroupSelection);
+            }
+            if &binding.side != side {
+                return Err(BridgeError::MixedSideSelection);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<'db> InteractiveBomCache<'db> {
