@@ -1,7 +1,8 @@
 use partnest_desktop_lib::commands::boxes::{create_box_service, resize_box_service, BoxInput};
 use partnest_desktop_lib::commands::parts::{
-    adjust_stock_service, create_part_service, update_part_service, PartInput,
+    adjust_stock_service, create_part_service, list_parts_service, update_part_service, PartInput,
 };
+use partnest_desktop_lib::commands::CommandError;
 use partnest_desktop_lib::db::{new_id, Database};
 
 fn database() -> Database {
@@ -35,13 +36,29 @@ fn part_input(box_id: &str, slot: &str, quantity: i64) -> PartInput {
 #[test]
 fn create_part_normalizes_slot_and_rejects_out_of_range_positions() {
     let db = database();
-    let box_record = create_box_service(&db, box_input(2, 3)).unwrap();
+    let box_record = create_box_service(&db, box_input(2, 100)).unwrap();
 
     let part = create_part_service(&db, part_input(&box_record.id, "a0", 2)).unwrap();
     assert_eq!(part.slot, "A0");
+    let mut multi_input = part_input(&box_record.id, "a10", 2);
+    multi_input.lcsc_code = "C124".into();
+    let multi_digit = create_part_service(&db, multi_input).unwrap();
+    assert_eq!(multi_digit.slot, "A10");
 
     assert!(create_part_service(&db, part_input(&box_record.id, "C0", 1)).is_err());
-    assert!(create_part_service(&db, part_input(&box_record.id, "A3", 1)).is_err());
+    assert!(create_part_service(&db, part_input(&box_record.id, "A100", 1)).is_err());
+    for invalid in ["A01", "A+1", "A-0", "A１"] {
+        assert!(
+            create_part_service(&db, part_input(&box_record.id, invalid, 1)).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn box_rejects_more_than_one_hundred_columns() {
+    let db = database();
+    assert!(create_box_service(&db, box_input(2, 101)).is_err());
 }
 
 #[test]
@@ -68,11 +85,31 @@ fn stale_version_update_returns_conflict() {
     let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
     let part = create_part_service(&db, part_input(&box_record.id, "A0", 1)).unwrap();
 
-    let mut changed = part_input(&box_record.id, "A0", 2);
+    let mut changed = part_input(&box_record.id, "A0", 99);
     changed.name = "updated".into();
     let updated = update_part_service(&db, &part.id, part.version, changed.clone()).unwrap();
     assert_eq!(updated.version, part.version + 1);
-    assert!(update_part_service(&db, &part.id, part.version, changed).is_err());
+    assert_eq!(updated.quantity, 1);
+    assert!(matches!(
+        update_part_service(&db, &part.id, part.version, changed),
+        Err(CommandError::Conflict)
+    ));
+}
+
+#[test]
+fn list_parts_filters_by_name_and_mpn() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
+    create_part_service(&db, part_input(&box_record.id, "A0", 1)).unwrap();
+    let mut other = part_input(&box_record.id, "A1", 1);
+    other.name = "capacitor".into();
+    other.mpn = "C-100".into();
+    other.lcsc_code = "C125".into();
+    create_part_service(&db, other).unwrap();
+
+    let results = list_parts_service(&db, Some("c-100")).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "capacitor");
 }
 
 #[test]

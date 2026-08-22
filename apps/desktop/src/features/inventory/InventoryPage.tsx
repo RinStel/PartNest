@@ -42,7 +42,7 @@ export function InventoryPage({ api = desktopApi }: { api?: Pick<DesktopApi, "li
       <label>名称 <input required value={form.name} onChange={(event) => setField("name", event.target.value)} /></label>
       <label>收纳盒 ID <input required value={form.box_id} onChange={(event) => setField("box_id", event.target.value)} /></label>
       <label>盒位 <input required value={form.slot} onChange={(event) => setField("slot", event.target.value)} /></label>
-      <label>数量 <input type="number" min="0" value={form.quantity} onChange={(event) => setField("quantity", Number(event.target.value))} /></label>
+      <label>数量 <input type="number" min="0" readOnly={Boolean(editing)} value={form.quantity} onChange={(event) => setField("quantity", Number(event.target.value))} /></label>
       <button type="submit">保存器件</button>
       {editing && <button type="button" onClick={() => { setEditing(null); setForm(blankPart); }}>取消</button>}
     </form>

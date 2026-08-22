@@ -60,20 +60,26 @@ pub(crate) fn validate_name(name: &str, kind: &str) -> Result<String, CommandErr
 
 pub(crate) fn normalize_slot(slot: &str, rows: i64, cols: i64) -> Result<String, CommandError> {
     let value = slot.trim().to_ascii_uppercase();
-    let mut chars = value.chars();
-    let row = chars
-        .next()
-        .ok_or_else(|| CommandError::Validation("盒位不能为空".into()))?;
-    if !row.is_ascii_uppercase() || chars.clone().next().is_none() {
+    let bytes = value.as_bytes();
+    if bytes.len() < 2 {
         return Err(CommandError::Validation(
             "盒位必须由字母行和数字列组成".into(),
         ));
     }
-    let column = chars
-        .as_str()
+    let row = bytes[0];
+    let column_text = &value[1..];
+    if !row.is_ascii_uppercase() || !column_text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(CommandError::Validation(
+            "盒位必须由字母行和数字列组成".into(),
+        ));
+    }
+    if column_text.len() > 1 && column_text.starts_with('0') {
+        return Err(CommandError::Validation("盒位列不能包含前导零".into()));
+    }
+    let column = column_text
         .parse::<i64>()
         .map_err(|_| CommandError::Validation("盒位列必须是从 0 开始的数字".into()))?;
-    let row_index = i64::from(row as u8 - b'A');
+    let row_index = i64::from(row - b'A');
     if row_index >= rows || column < 0 || column >= cols {
         return Err(CommandError::Validation(format!(
             "盒位 {value} 超出收纳盒范围"

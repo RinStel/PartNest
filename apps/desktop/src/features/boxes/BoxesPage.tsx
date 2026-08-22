@@ -20,6 +20,10 @@ export function BoxesPage({ api = desktopApi }: { api?: Pick<DesktopApi, "listBo
 
   async function saveBox() {
     setError("");
+    if (cols > 100) {
+      setError("列数不能超过 100");
+      return;
+    }
     try {
       const created = await api.createBox({ name, rows, cols });
       setBoxes((current) => [...current, created]);
@@ -31,6 +35,10 @@ export function BoxesPage({ api = desktopApi }: { api?: Pick<DesktopApi, "listBo
   async function resize(box: Box) {
     setError("");
     const draft = drafts[box.id] ?? { rows: box.rows, cols: box.cols };
+    if (draft.cols > 100) {
+      setError("列数不能超过 100");
+      return;
+    }
     try {
       const updated = await api.resizeBox(box.id, draft.rows, draft.cols);
       setBoxes((current) => current.map((item) => item.id === updated.id ? updated : item));
@@ -42,7 +50,7 @@ export function BoxesPage({ api = desktopApi }: { api?: Pick<DesktopApi, "listBo
     <div className="form-row">
       <label>名称 <input value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label>行 <input type="number" min="1" value={rows} onChange={(event) => setRows(Number(event.target.value))} /></label>
-      <label>列 <input type="number" min="1" value={cols} onChange={(event) => setCols(Number(event.target.value))} /></label>
+      <label>列 <input type="number" min="1" max="100" value={cols} onChange={(event) => setCols(Number(event.target.value))} /></label>
       <button type="button" onClick={() => void saveBox()}>新建收纳盒</button>
     </div>
     {error && <p role="alert">{error}</p>}
@@ -54,7 +62,7 @@ export function BoxesPage({ api = desktopApi }: { api?: Pick<DesktopApi, "listBo
           <h3>{box.name}</h3>
           <div className="form-row">
             <label>行 <input type="number" min="1" value={draft.rows} onChange={(event) => setDrafts((current) => ({ ...current, [box.id]: { ...draft, rows: Number(event.target.value) } }))} /></label>
-            <label>列 <input type="number" min="1" value={draft.cols} onChange={(event) => setDrafts((current) => ({ ...current, [box.id]: { ...draft, cols: Number(event.target.value) } }))} /></label>
+            <label>列 <input type="number" min="1" max="100" value={draft.cols} onChange={(event) => setDrafts((current) => ({ ...current, [box.id]: { ...draft, cols: Number(event.target.value) } }))} /></label>
             <button type="button" onClick={() => void resize(box)}>保存</button>
           </div>
           <div className="box-grid" style={{ gridTemplateColumns: `repeat(${box.cols}, minmax(2rem, 1fr))` }} aria-label={`${box.name}盒位网格`}>
@@ -68,4 +76,3 @@ export function BoxesPage({ api = desktopApi }: { api?: Pick<DesktopApi, "listBo
     </div>
   </section>;
 }
-

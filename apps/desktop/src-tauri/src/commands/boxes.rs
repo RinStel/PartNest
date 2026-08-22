@@ -22,9 +22,9 @@ pub struct BoxView {
 }
 
 fn validate_dimensions(rows: i64, cols: i64) -> Result<(), CommandError> {
-    if rows <= 0 || rows > 26 || cols <= 0 {
+    if rows <= 0 || rows > 26 || cols <= 0 || cols > 100 {
         return Err(CommandError::Validation(
-            "收纳盒行列必须为正数，行数不能超过 26".into(),
+            "收纳盒行列必须为正数，行数不能超过 26，列数不能超过 100".into(),
         ));
     }
     Ok(())

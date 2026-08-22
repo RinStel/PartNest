@@ -38,9 +38,10 @@ pub struct PartView {
 fn validate_input(
     db: &Database,
     input: &PartInput,
+    validate_quantity: bool,
 ) -> Result<(String, String, String), CommandError> {
     let name = validate_name(&input.name, "器件")?;
-    if input.quantity < 0 {
+    if validate_quantity && input.quantity < 0 {
         return Err(CommandError::Validation("库存数量不能为负数".into()));
     }
     let Some((rows, cols)) = db
@@ -117,7 +118,7 @@ pub fn list_parts_service(
 }
 
 pub fn create_part_service(db: &Database, input: PartInput) -> Result<PartView, CommandError> {
-    let (name, box_id, slot) = validate_input(db, &input)?;
+    let (name, box_id, slot) = validate_input(db, &input, true)?;
     let id = new_id();
     db.connection().execute(
         "INSERT INTO parts (id, name, category, package, manufacturer, mpn, lcsc_code, quantity, box_id, slot, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -132,10 +133,10 @@ pub fn update_part_service(
     expected_version: i64,
     input: PartInput,
 ) -> Result<PartView, CommandError> {
-    let (name, box_id, slot) = validate_input(db, &input)?;
+    let (name, box_id, slot) = validate_input(db, &input, false)?;
     let changed = db.connection().execute(
-        "UPDATE parts SET name = ?1, category = ?2, package = ?3, manufacturer = ?4, mpn = ?5, lcsc_code = ?6, quantity = ?7, box_id = ?8, slot = ?9, note = ?10, version = version + 1, updated_at = ?11 WHERE id = ?12 AND version = ?13",
-        params![name, optional_text(&input.category), optional_text(&input.package), optional_text(&input.manufacturer), optional_text(&input.mpn), optional_text(&input.lcsc_code), input.quantity, box_id, slot, optional_text(&input.note), utc_now(), id, expected_version],
+        "UPDATE parts SET name = ?1, category = ?2, package = ?3, manufacturer = ?4, mpn = ?5, lcsc_code = ?6, box_id = ?7, slot = ?8, note = ?9, version = version + 1, updated_at = ?10 WHERE id = ?11 AND version = ?12",
+        params![name, optional_text(&input.category), optional_text(&input.package), optional_text(&input.manufacturer), optional_text(&input.mpn), optional_text(&input.lcsc_code), box_id, slot, optional_text(&input.note), utc_now(), id, expected_version],
     )?;
     if changed != 1 {
         return Err(CommandError::Conflict);
