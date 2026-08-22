@@ -151,7 +151,7 @@ impl InteractiveBomRuntime {
         component_key: &str,
         side: &BomSide,
         designators: &[String],
-    ) -> Result<(), BridgeError> {
+    ) -> Result<i64, BridgeError> {
         let active = self
             .active
             .lock()
@@ -185,7 +185,25 @@ impl InteractiveBomRuntime {
                 return Err(BridgeError::MixedSideSelection);
             }
         }
-        Ok(())
+        let expected = active
+            .designators
+            .iter()
+            .filter(|(_, binding)| binding.component_key == component_key && &binding.side == side)
+            .map(|(designator, _)| designator.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let submitted = designators
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::HashSet<_>>();
+        if submitted.len() != designators.len() {
+            return Err(BridgeError::DuplicateDesignator);
+        }
+        if submitted != expected {
+            return Err(BridgeError::InvalidMessage(
+                "selection must include every designator for this board side".into(),
+            ));
+        }
+        Ok(expected.len() as i64)
     }
 }
 

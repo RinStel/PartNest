@@ -15,6 +15,24 @@ pub fn confirm_take_service(
     welding_repository::confirm_take(db, input)
 }
 
+pub fn confirm_take_authorized_service(
+    db: &Database,
+    runtime: &InteractiveBomRuntime,
+    mut input: ConfirmTakeInput,
+) -> Result<TakeResult, CommandError> {
+    let bom_quantity = runtime
+        .validate_welding_selection(
+            db,
+            &input.session_id,
+            &input.component_key,
+            &input.side,
+            &input.designators,
+        )
+        .map_err(|error| CommandError::Validation(error.to_string()))?;
+    input.bom_quantity = bom_quantity;
+    confirm_take_service(db, input)
+}
+
 pub fn reverse_take_service(db: &Database, movement_id: &str) -> Result<TakeResult, CommandError> {
     welding_repository::reverse_take(db, movement_id)
 }
@@ -26,22 +44,6 @@ pub fn get_welding_progress_service(
     welding_repository::get_welding_progress(db, session_id)
 }
 
-fn validate_selection(
-    db: &Database,
-    runtime: &InteractiveBomRuntime,
-    input: &ConfirmTakeInput,
-) -> Result<(), CommandError> {
-    runtime
-        .validate_welding_selection(
-            db,
-            &input.session_id,
-            &input.component_key,
-            &input.side,
-            &input.designators,
-        )
-        .map_err(|error| CommandError::Validation(error.to_string()))
-}
-
 #[tauri::command(rename = "confirm_take")]
 pub fn confirm_take(
     input: ConfirmTakeInput,
@@ -50,8 +52,7 @@ pub fn confirm_take(
 ) -> Result<TakeResult, CommandError> {
     let database = database.lock().map_err(super::lock_error)?;
     let runtime = runtime.lock().map_err(super::lock_error)?;
-    validate_selection(&database, &runtime, &input)?;
-    confirm_take_service(&database, input)
+    confirm_take_authorized_service(&database, &runtime, input)
 }
 
 #[tauri::command(rename = "reverse_take")]

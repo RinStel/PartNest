@@ -84,8 +84,8 @@ fn validate_input(input: &ConfirmTakeInput) -> Result<(), CommandError> {
     if input.take_quantity <= 0 {
         return Err(CommandError::Validation("取用数量必须为正整数".into()));
     }
-    if input.bom_quantity < 0 {
-        return Err(CommandError::Validation("BOM数量不能为负数".into()));
+    if input.bom_quantity <= 0 {
+        return Err(CommandError::Validation("BOM数量必须为正整数".into()));
     }
     if input.expected_part_version <= 0 {
         return Err(CommandError::Validation("器件版本无效".into()));
