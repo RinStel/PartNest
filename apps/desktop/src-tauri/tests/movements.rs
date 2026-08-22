@@ -46,21 +46,32 @@ fn movements_are_newest_first_with_stock_before_after_and_reversal_visibility() 
             [],
         )
         .unwrap();
-    db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, created_at) VALUES ('m-old', ?1, 'session-1', 'adjust', 5, 'restock', 'R1', '2026-01-01T00:00:00.000Z')", params![part.id]).unwrap();
-    db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, created_at) VALUES ('m-take', ?1, 'session-1', 'consume', -2, 'welding take', 'R1', '2026-01-02T00:00:00.000Z')", params![part.id]).unwrap();
+    db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side, created_at) VALUES ('m-old', ?1, 'session-1', 'adjust', 5, 'restock', 'R1', 'top', '2026-01-01T00:00:00.000Z')", params![part.id]).unwrap();
+    db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side, created_at) VALUES ('m-take', ?1, 'session-1', 'consume', -2, 'welding take', 'R1', 'top', '2026-01-02T00:00:00.000Z')", params![part.id]).unwrap();
 
     let movements = list_movements_service(&db).unwrap();
     assert_eq!(movements.len(), 2);
     assert_eq!(movements[0].id, "m-take");
     assert_eq!(movements[0].before_quantity, Some(15));
     assert_eq!(movements[0].after_quantity, Some(13));
+    assert_eq!(movements[0].part_id.as_deref(), Some(part.id.as_str()));
+    assert_eq!(movements[0].part_name.as_deref(), Some("10k resistor"));
+    assert_eq!(movements[0].component_key.as_deref(), Some("R1"));
+    assert_eq!(movements[0].movement_type, "consume");
+    assert_eq!(movements[0].delta, -2);
+    assert_eq!(movements[0].quantity, -2);
+    assert_eq!(movements[0].reason, "welding take");
     assert_eq!(movements[0].bom_display_name.as_deref(), Some("Board note"));
-    assert!(movements[0].can_reverse);
+    assert_eq!(movements[0].session_id.as_deref(), Some("session-1"));
+    assert_eq!(movements[0].side.as_deref(), Some("top"));
+    assert_eq!(movements[0].created_at, "2026-01-02T00:00:00.000Z");
+    assert!(movements[0].reverses_movement_id.is_none());
+    assert!(movements[0].reversible);
 
     db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, reverses_movement_id, component_key, created_at) VALUES ('m-reverse', ?1, 'session-1', 'reverse', 2, 'welding take reversal', 'm-take', 'R1', '2026-01-03T00:00:00.000Z')", params![part.id]).unwrap();
     let movements = list_movements_service(&db).unwrap();
     assert_eq!(movements[1].id, "m-take");
-    assert!(!movements[1].can_reverse);
+    assert!(!movements[1].reversible);
 }
 
 #[test]

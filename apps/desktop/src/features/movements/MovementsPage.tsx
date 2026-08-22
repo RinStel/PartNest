@@ -47,7 +47,7 @@ export function MovementsPage({ api = desktopApi }: { api?: MovementsApi }) {
         <td>{quantity(movement.after_quantity)}</td>
         <td>{movement.reason}</td>
         <td>{movement.bom_display_name ?? "—"}</td>
-        <td>{movement.can_reverse && <button type="button" disabled={busyId === movement.id} onClick={() => void reverse(movement)}>撤销取用</button>}</td>
+        <td>{movement.reversible && <button type="button" disabled={busyId === movement.id} onClick={() => void reverse(movement)}>撤销取用</button>}</td>
       </tr>)}</tbody>
     </table>}
   </section>;

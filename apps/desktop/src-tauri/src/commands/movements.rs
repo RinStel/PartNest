@@ -12,6 +12,7 @@ pub struct MovementView {
     pub part_name: Option<String>,
     pub component: Option<String>,
     pub component_key: Option<String>,
+    pub side: Option<String>,
     pub movement_type: String,
     pub delta: i64,
     pub quantity: i64,
@@ -22,7 +23,7 @@ pub struct MovementView {
     pub session_id: Option<String>,
     pub created_at: String,
     pub reverses_movement_id: Option<String>,
-    pub can_reverse: bool,
+    pub reversible: bool,
 }
 
 struct RawMovement {
@@ -35,6 +36,7 @@ struct RawMovement {
     bom_display_name: Option<String>,
     session_id: Option<String>,
     component_key: Option<String>,
+    side: Option<String>,
     created_at: String,
     reverses_movement_id: Option<String>,
     has_reversal: bool,
@@ -51,7 +53,7 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
 
     let mut statement = db.connection().prepare(
         "SELECT m.id, m.part_id, p.name, m.movement_type, m.quantity, m.reason,
-                bf.display_name, m.session_id, m.component_key, m.created_at,
+                bf.display_name, m.session_id, m.component_key, m.side, m.created_at,
                 m.reverses_movement_id,
                 EXISTS(SELECT 1 FROM inventory_movements reversal
                        WHERE reversal.reverses_movement_id = m.id)
@@ -72,9 +74,10 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
             bom_display_name: row.get(6)?,
             session_id: row.get(7)?,
             component_key: row.get(8)?,
-            created_at: row.get(9)?,
-            reverses_movement_id: row.get(10)?,
-            has_reversal: row.get(11)?,
+            side: row.get(9)?,
+            created_at: row.get(10)?,
+            reverses_movement_id: row.get(11)?,
+            has_reversal: row.get(12)?,
         })
     })?;
 
@@ -94,7 +97,7 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
         } else {
             (None, None)
         };
-        let can_reverse = movement.movement_type == "consume"
+        let reversible = movement.movement_type == "consume"
             && movement.quantity < 0
             && movement.reverses_movement_id.is_none()
             && !movement.has_reversal;
@@ -115,9 +118,10 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
             reason: movement.reason,
             bom_display_name: movement.bom_display_name,
             session_id: movement.session_id,
+            side: movement.side,
             created_at: movement.created_at,
             reverses_movement_id: movement.reverses_movement_id,
-            can_reverse,
+            reversible,
         });
     }
     Ok(result)

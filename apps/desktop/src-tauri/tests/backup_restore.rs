@@ -1,9 +1,14 @@
 use partnest_desktop_lib::{
-    backup::{create_backup, restore_database_file, validate_backup},
+    backup::{
+        backup_dir, create_backup, maybe_create_startup_backup, restore_database_file,
+        restore_database_file_with_injected_failure, validate_backup, BackupError,
+        STARTUP_BACKUP_AGE,
+    },
     db::{new_id, Database},
 };
 use rusqlite::{Connection, OpenFlags};
-use std::fs;
+use std::fs::{self, File};
+use std::time::{Duration, SystemTime};
 use tempfile::tempdir;
 
 fn seed_database(path: &std::path::Path) -> Database {
@@ -47,6 +52,12 @@ fn seed_database(path: &std::path::Path) -> Database {
     db
 }
 
+fn sidecar(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = path.file_name().unwrap().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
 fn count(path: &std::path::Path, table: &str) -> i64 {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
     connection
@@ -75,6 +86,71 @@ fn backup_includes_uncheckpointed_wal_rows_and_all_business_tables() {
     assert_eq!(count(&backup_path, "inventory_movements"), 1);
     assert_eq!(count(&backup_path, "welding_progress"), 1);
     validate_backup(&backup_path).unwrap();
+}
+
+#[test]
+fn backup_rejects_a_file_that_only_has_schema_migrations() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("schema-only.db");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_migrations (version, applied_at) VALUES (2, 'now');",
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        validate_backup(&path),
+        Err(BackupError::Invalid(_))
+    ));
+}
+
+#[test]
+fn backup_reads_rows_left_in_a_wal_without_source_checkpointing() {
+    let root = tempdir().unwrap();
+    let db_path = root.path().join("wal-source.db");
+    let db = Database::open(&db_path).unwrap();
+    db.connection()
+        .execute_batch("PRAGMA wal_autocheckpoint = 0;")
+        .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO boxes (id, name, rows, cols) VALUES ('wal-box', 'WAL', 1, 1)",
+            [],
+        )
+        .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO parts (id, name, quantity, box_id, slot) VALUES ('wal-part', 'WAL part', 7, 'wal-box', 'A0')",
+            [],
+        )
+        .unwrap();
+    let wal_path = sidecar(&db_path, "-wal");
+    assert!(
+        wal_path.is_file(),
+        "the source must have an uncheckpointed WAL"
+    );
+
+    let backup_path = create_backup(&db, root.path().join("backups")).unwrap();
+    assert_eq!(count(&backup_path, "parts"), 1);
+    assert_eq!(
+        Connection::open(&backup_path)
+            .unwrap()
+            .query_row(
+                "SELECT quantity FROM parts WHERE id = 'wal-part'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        7
+    );
+    assert!(!sidecar(&backup_path, "-wal").exists());
+    assert!(!sidecar(&backup_path, "-shm").exists());
 }
 
 #[test]
@@ -140,6 +216,43 @@ fn failed_restore_preserves_the_existing_database() {
 }
 
 #[test]
+fn post_swap_open_failure_restores_the_original_file_and_connection() {
+    let root = tempdir().unwrap();
+    let source = seed_database(&root.path().join("source.db"));
+    let backup_path = create_backup(&source, root.path().join("backups")).unwrap();
+    drop(source);
+
+    let target_path = root.path().join("target.db");
+    let mut target = seed_database(&target_path);
+    target
+        .connection()
+        .execute("DELETE FROM inventory_movements", [])
+        .unwrap();
+    let result = restore_database_file_with_injected_failure(&mut target, &backup_path);
+    assert!(
+        matches!(result, Err(BackupError::Invalid(message)) if message.contains("替换后打开失败"))
+    );
+    assert_eq!(count(&target_path, "inventory_movements"), 0);
+    assert_eq!(
+        target
+            .connection()
+            .query_row("SELECT COUNT(*) FROM inventory_movements", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(!root
+        .path()
+        .read_dir()
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".partnest-previous-")));
+}
+
+#[test]
 fn restore_replaces_live_database_from_a_valid_backup() {
     let root = tempdir().unwrap();
     let source_path = root.path().join("source.db");
@@ -156,4 +269,96 @@ fn restore_replaces_live_database_from_a_valid_backup() {
     restore_database_file(&mut target, &backup_path).unwrap();
     assert_eq!(count(&target_path, "inventory_movements"), 1);
     assert_eq!(count(&target_path, "welding_progress"), 1);
+}
+
+#[test]
+fn successful_restore_removes_previous_database_sidecars() {
+    let root = tempdir().unwrap();
+    let source = seed_database(&root.path().join("source.db"));
+    let backup_path = create_backup(&source, root.path().join("backups")).unwrap();
+    drop(source);
+
+    let target_path = root.path().join("target.db");
+    let mut target = seed_database(&target_path);
+    let live_wal = sidecar(&target_path, "-wal");
+    let live_shm = sidecar(&target_path, "-shm");
+    assert!(live_wal.is_file());
+    assert!(live_shm.is_file());
+    restore_database_file(&mut target, &backup_path).unwrap();
+
+    assert!(!root
+        .path()
+        .read_dir()
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".partnest-previous-")));
+}
+
+#[test]
+fn startup_backup_is_reused_until_it_is_at_least_24_hours_old() {
+    let root = tempdir().unwrap();
+    let db = seed_database(&root.path().join("partnest.db"));
+    let first = maybe_create_startup_backup(&db, root.path())
+        .unwrap()
+        .unwrap();
+    assert!(maybe_create_startup_backup(&db, root.path())
+        .unwrap()
+        .is_none());
+
+    let file = File::options().write(true).open(&first).unwrap();
+    file.set_modified(SystemTime::now() - STARTUP_BACKUP_AGE - Duration::from_secs(1))
+        .unwrap();
+    assert!(maybe_create_startup_backup(&db, root.path())
+        .unwrap()
+        .is_some());
+    let valid_count = fs::read_dir(backup_dir(root.path()))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "db")
+                && entry.file_name().to_string_lossy().starts_with("partnest-")
+        })
+        .count();
+    assert_eq!(
+        valid_count, 2,
+        "an old valid backup should trigger exactly one new startup backup"
+    );
+}
+
+#[test]
+fn rotation_keeps_invalid_and_unrelated_files() {
+    let root = tempdir().unwrap();
+    let backup_directory = root.path().join("backups");
+    fs::create_dir_all(&backup_directory).unwrap();
+    let invalid = backup_directory.join("partnest-invalid.db");
+    let unrelated = backup_directory.join("notes.db");
+    fs::write(&invalid, b"not a backup").unwrap();
+    fs::write(&unrelated, b"leave me alone").unwrap();
+
+    let db = seed_database(&root.path().join("partnest.db"));
+    for _ in 0..12 {
+        create_backup(&db, &backup_directory).unwrap();
+    }
+    assert!(invalid.is_file());
+    assert_eq!(fs::read(&unrelated).unwrap(), b"leave me alone");
+}
+
+#[test]
+fn restore_rejects_a_hard_link_to_the_live_database() {
+    let root = tempdir().unwrap();
+    let target_path = root.path().join("target.db");
+    let mut target = seed_database(&target_path);
+    let hard_link = root.path().join("target-alias.db");
+    fs::hard_link(&target_path, &hard_link).unwrap();
+
+    assert!(matches!(
+        restore_database_file(&mut target, &hard_link),
+        Err(BackupError::Invalid(message)) if message.contains("硬链接")
+    ));
 }

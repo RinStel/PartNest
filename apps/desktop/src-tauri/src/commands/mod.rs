@@ -52,6 +52,9 @@ impl From<crate::backup::BackupError> for CommandError {
             error @ crate::backup::BackupError::SchemaTooNew { .. } => {
                 Self::Validation(error.to_string())
             }
+            error @ crate::backup::BackupError::FatalRecovery { .. } => {
+                Self::Database(error.to_string())
+            }
             crate::backup::BackupError::Io(error) => Self::Database(error.to_string()),
             crate::backup::BackupError::Sqlite(error) => Self::Database(error.to_string()),
         }

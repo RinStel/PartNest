@@ -125,6 +125,25 @@ fn restores_active_session_with_new_token_after_runtime_restart() {
 }
 
 #[test]
+fn does_not_restore_an_inactive_session_after_runtime_restart() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache_dir = root.path().join("cache");
+    let first = InteractiveBomCache::new(&db, &cache_dir)
+        .cache_interactive_bom(fixture(), "Fixture")
+        .unwrap();
+    db.connection()
+        .execute(
+            "UPDATE welding_sessions SET status = 'completed' WHERE id = ?1",
+            [&first.session_id],
+        )
+        .unwrap();
+
+    let restarted = InteractiveBomCache::new(&db, &cache_dir);
+    assert!(restarted.restore_active_session().unwrap().is_none());
+}
+
+#[test]
 fn resolver_authoritatively_rejects_oversized_direct_inputs() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();

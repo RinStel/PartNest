@@ -100,6 +100,7 @@ export type Movement = {
   part_name: string | null;
   component: string | null;
   component_key: string | null;
+  side: BomSide | null;
   movement_type: string;
   delta: number;
   quantity: number;
@@ -110,7 +111,7 @@ export type Movement = {
   session_id: string | null;
   created_at: string;
   reverses_movement_id: string | null;
-  can_reverse: boolean;
+  reversible: boolean;
 };
 
 export type DesktopApi = {
