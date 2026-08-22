@@ -30,6 +30,7 @@ pub struct BomGroupDto {
     pub mpn: String,
     pub lcsc_code: String,
     pub quantity: i64,
+    pub designators: Vec<String>,
     pub placements: Vec<BomPlacementDto>,
     pub extra_fields: BTreeMap<String, String>,
 }

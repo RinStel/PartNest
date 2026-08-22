@@ -29,7 +29,27 @@ pub enum TabularError {
     Csv(csv::Error),
     Workbook(String),
     UnsupportedEncoding,
-    InvalidRecord { row: usize, reason: String },
+    MalformedCsv {
+        delimiter: char,
+        error: String,
+    },
+    InvalidQuantity {
+        row: usize,
+        value: String,
+    },
+    QuantityDesignatorMismatch {
+        row: usize,
+        quantity: i64,
+        designators: usize,
+    },
+    InvalidSide {
+        row: usize,
+        value: String,
+    },
+    InvalidRecord {
+        row: usize,
+        reason: String,
+    },
 }
 
 impl fmt::Display for TabularError {
@@ -39,6 +59,23 @@ impl fmt::Display for TabularError {
             Self::Csv(error) => write!(f, "CSV error: {error}"),
             Self::Workbook(error) => write!(f, "workbook error: {error}"),
             Self::UnsupportedEncoding => write!(f, "unsupported text encoding"),
+            Self::MalformedCsv { delimiter, error } => {
+                write!(f, "malformed CSV using {delimiter:?} delimiter: {error}")
+            }
+            Self::InvalidQuantity { row, value } => {
+                write!(f, "invalid quantity at row {row}: {value:?}")
+            }
+            Self::QuantityDesignatorMismatch {
+                row,
+                quantity,
+                designators,
+            } => write!(
+                f,
+                "quantity/designator mismatch at row {row}: quantity {quantity}, designators {designators}"
+            ),
+            Self::InvalidSide { row, value } => {
+                write!(f, "unsupported board side at row {row}: {value:?}")
+            }
             Self::InvalidRecord { row, reason } => write!(f, "invalid BOM row {row}: {reason}"),
         }
     }
@@ -102,34 +139,42 @@ fn read_csv(path: &Path) -> Result<Table, TabularError> {
     let bytes = fs::read(path)?;
     let text = decode_text(&bytes)?;
     let mut candidates = Vec::new();
+    let mut malformed = Vec::new();
     for delimiter in *b",\t" {
         let mut reader = ReaderBuilder::new()
             .has_headers(false)
             .delimiter(delimiter)
             .from_reader(text.as_bytes());
-        let Ok(rows) = reader.records().collect::<Result<Vec<_>, _>>() else {
-            continue;
-        };
-        if let Some(table) = table_from_records(rows) {
-            let recognized = table
-                .headers
-                .iter()
-                .filter(|header| canonical_header(header).is_some())
-                .count();
-            let width = table.headers.len();
-            let stable = table.records.iter().take(20).all(|row| row.len() == width);
-            candidates.push((stable, recognized, width, delimiter, table));
+        match reader.records().collect::<Result<Vec<_>, _>>() {
+            Ok(rows) => {
+                if let Some(table) = table_from_records(rows) {
+                    let recognized = table
+                        .headers
+                        .iter()
+                        .filter(|header| canonical_header(header).is_some())
+                        .count();
+                    let width = table.headers.len();
+                    let stable = table.records.iter().take(20).all(|row| row.len() == width);
+                    candidates.push((stable, recognized, width, delimiter, table));
+                }
+            }
+            Err(error) => malformed.push((delimiter as char, error.to_string())),
         }
     }
     candidates
         .sort_by_key(|candidate| (candidate.0, candidate.1, candidate.2, candidate.3 == b','));
-    candidates
-        .pop()
-        .map(|(_, _, _, _, table)| table)
-        .ok_or_else(|| TabularError::InvalidRecord {
-            row: 1,
-            reason: "missing header".into(),
-        })
+    if let Some((_, recognized, _, _, table)) = candidates.pop() {
+        if recognized > 0 || malformed.is_empty() {
+            return Ok(table);
+        }
+    }
+    if let Some((delimiter, error)) = malformed.into_iter().next() {
+        return Err(TabularError::MalformedCsv { delimiter, error });
+    }
+    Err(TabularError::InvalidRecord {
+        row: 1,
+        reason: "missing header".into(),
+    })
 }
 
 fn read_xlsx(path: &Path) -> Result<Table, TabularError> {
@@ -163,6 +208,9 @@ fn data_to_string(value: &Data) -> String {
 
 fn decode_text(bytes: &[u8]) -> Result<String, TabularError> {
     if bytes.starts_with(&[0xff, 0xfe]) {
+        if !(bytes.len() - 2).is_multiple_of(2) {
+            return Err(TabularError::UnsupportedEncoding);
+        }
         let (text, _, had_errors) = UTF_16LE.decode(&bytes[2..]);
         if had_errors {
             return Err(TabularError::UnsupportedEncoding);
@@ -302,15 +350,29 @@ fn normalize_table(
         };
         let designators = value("designators");
         let designator_list = split_designators(&designators);
-        let quantity = parse_quantity(&value("quantity"))
-            .or_else(|| (!designator_list.is_empty()).then_some(designator_list.len() as i64))
-            .unwrap_or(0);
-        if quantity <= 0 {
+        let quantity = if index.contains_key("quantity") {
+            let raw_quantity = value("quantity");
+            let quantity =
+                parse_quantity(&raw_quantity).ok_or_else(|| TabularError::InvalidQuantity {
+                    row: offset + 2,
+                    value: raw_quantity.clone(),
+                })?;
+            if !designator_list.is_empty() && quantity as usize != designator_list.len() {
+                return Err(TabularError::QuantityDesignatorMismatch {
+                    row: offset + 2,
+                    quantity,
+                    designators: designator_list.len(),
+                });
+            }
+            quantity
+        } else if !designator_list.is_empty() {
+            designator_list.len() as i64
+        } else {
             return Err(TabularError::InvalidRecord {
                 row: offset + 2,
-                reason: "quantity must be positive or designators must be present".into(),
+                reason: "quantity or designators is required".into(),
             });
-        }
+        };
         let name = value("name");
         let component_key = component_key(
             &value("lcsc_code"),
@@ -325,7 +387,17 @@ fn normalize_table(
                 reason: "missing component identity".into(),
             });
         }
-        let side = parse_side(&value("side"));
+        let raw_side = value("side");
+        let side = if raw_side.is_empty() {
+            None
+        } else {
+            Some(
+                parse_side(&raw_side).ok_or_else(|| TabularError::InvalidSide {
+                    row: offset + 2,
+                    value: raw_side.clone(),
+                })?,
+            )
+        };
         let group = groups
             .entry(component_key.clone())
             .or_insert_with(|| BomGroupDto {
@@ -337,10 +409,12 @@ fn normalize_table(
                 mpn: value("mpn"),
                 lcsc_code: value("lcsc_code"),
                 quantity: 0,
+                designators: Vec::new(),
                 placements: Vec::new(),
                 extra_fields: BTreeMap::new(),
             });
         group.quantity += quantity;
+        group.designators.extend(designator_list.iter().cloned());
         if side.is_some() {
             group
                 .placements

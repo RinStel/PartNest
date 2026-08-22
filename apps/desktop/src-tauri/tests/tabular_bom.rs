@@ -1,10 +1,14 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use partnest_desktop_lib::bom::tabular::inspect_tabular_bom;
+use partnest_desktop_lib::bom::tabular::TabularError;
 use partnest_desktop_lib::bom::types::ImportPreview;
+
+static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -26,6 +30,64 @@ fn comma_and_tab_files_normalize_identically() {
     let comma = parse_fixture("comma-utf8.csv");
     let tab = parse_fixture("tab-utf16le.csv");
     assert_eq!(comma.groups, tab.groups);
+    assert_eq!(comma.groups[0].designators, ["C1", "C2"]);
+}
+
+#[test]
+fn explicit_quantity_must_equal_designator_count_without_side() {
+    let path = temp_csv("Quantity,Designator,Footprint,Value\n1,\"C1,C2\",0603,100nF\n");
+    let result = inspect_tabular_bom(&path, None);
+    assert!(matches!(
+        result,
+        Err(TabularError::QuantityDesignatorMismatch {
+            quantity: 1,
+            designators: 2,
+            ..
+        })
+    ));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn explicit_quantity_must_equal_designator_count_with_side() {
+    let path = temp_csv("Quantity,Designator,Footprint,Value,Side\n1,\"C1,C2\",0603,100nF,Top\n");
+    let result = inspect_tabular_bom(&path, None);
+    assert!(matches!(
+        result,
+        Err(TabularError::QuantityDesignatorMismatch {
+            quantity: 1,
+            designators: 2,
+            ..
+        })
+    ));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn invalid_explicit_quantity_never_falls_back_to_designators() {
+    for quantity in ["0", "-1", "not-a-number"] {
+        let path = temp_csv(&format!(
+            "Quantity,Designator,Footprint,Value\n{quantity},C1,0603,100nF\n"
+        ));
+        let result = inspect_tabular_bom(&path, None);
+        assert!(
+            matches!(result, Err(TabularError::InvalidQuantity { .. })),
+            "{quantity}"
+        );
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn absent_quantity_uses_designator_count() {
+    let path = temp_csv("Designator,Footprint,Value\n\"C1,C2\",0603,100nF\n");
+    let result = inspect_tabular_bom(&path, None).expect("parse designator count");
+    let ImportPreview::Ready(bom) = result else {
+        panic!("expected ready")
+    };
+    assert_eq!(bom.groups[0].quantity, 2);
+    assert_eq!(bom.groups[0].designators, ["C1", "C2"]);
+    fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -70,7 +132,7 @@ fn duplicate_field_headers_require_mapping_instead_of_guessing() {
 #[test]
 fn supplied_mapping_resolves_custom_headers() {
     let path = std::env::temp_dir().join(format!("partnest-mapping-{}.csv", std::process::id()));
-    fs::write(&path, "Count,Refs,Case,Param\n2,C1,C0603,10k\n").unwrap();
+    fs::write(&path, "Count,Refs,Case,Param\n1,C1,C0603,10k\n").unwrap();
     let mapping = [
         ("quantity".to_owned(), "Count".to_owned()),
         ("designators".to_owned(), "Refs".to_owned()),
@@ -83,14 +145,110 @@ fn supplied_mapping_resolves_custom_headers() {
     let ImportPreview::Ready(bom) = result else {
         panic!("custom mapping should be ready")
     };
-    assert_eq!(bom.groups[0].quantity, 2);
+    assert_eq!(bom.groups[0].quantity, 1);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn custom_mapping_collision_requires_mapping_review() {
+    let path = temp_csv("Count,Refs,Case,Param\n2,C1,C0603,10k\n");
+    let mapping = [
+        ("quantity".to_owned(), "Count".to_owned()),
+        ("designators".to_owned(), "Count".to_owned()),
+        ("package".to_owned(), "Case".to_owned()),
+        ("value".to_owned(), "Param".to_owned()),
+    ]
+    .into_iter()
+    .collect();
+    let result = inspect_tabular_bom(&path, Some(&mapping)).expect("inspect collision");
+    assert!(matches!(result, ImportPreview::NeedsMapping { .. }));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn utf8_bom_is_decoded() {
+    let path = std::env::temp_dir().join(format!("partnest-utf8-bom-{}.csv", std::process::id()));
+    let mut bytes = vec![0xef, 0xbb, 0xbf];
+    bytes.extend_from_slice(b"Quantity,Designator,Footprint,Value\n1,C1,0603,10k\n");
+    fs::write(&path, bytes).unwrap();
+    assert!(matches!(
+        inspect_tabular_bom(&path, None),
+        Ok(ImportPreview::Ready(_))
+    ));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn invalid_utf8_and_malformed_utf16le_are_rejected() {
+    let invalid_utf8 =
+        std::env::temp_dir().join(format!("partnest-invalid-utf8-{}.csv", std::process::id()));
+    fs::write(&invalid_utf8, [0xff, 0xfe, 0x00]).unwrap();
+    assert!(matches!(
+        inspect_tabular_bom(&invalid_utf8, None),
+        Err(TabularError::UnsupportedEncoding)
+    ));
+    fs::remove_file(invalid_utf8).unwrap();
+
+    let invalid_utf8 = std::env::temp_dir().join(format!(
+        "partnest-invalid-utf8-raw-{}.csv",
+        std::process::id()
+    ));
+    fs::write(&invalid_utf8, [0xff, 0x00, 0x61]).unwrap();
+    assert!(matches!(
+        inspect_tabular_bom(&invalid_utf8, None),
+        Err(TabularError::UnsupportedEncoding)
+    ));
+    fs::remove_file(invalid_utf8).unwrap();
+
+    let malformed_utf16 =
+        std::env::temp_dir().join(format!("partnest-odd-utf16-{}.csv", std::process::id()));
+    fs::write(&malformed_utf16, [0xff, 0xfe, b'Q']).unwrap();
+    assert!(matches!(
+        inspect_tabular_bom(&malformed_utf16, None),
+        Err(TabularError::UnsupportedEncoding)
+    ));
+    fs::remove_file(malformed_utf16).unwrap();
+}
+
+#[test]
+fn malformed_csv_is_rejected() {
+    let path = temp_csv("Quantity,Designator,Footprint,Value\n1,\"C1,0603,10k\n");
+    assert!(matches!(
+        inspect_tabular_bom(&path, None),
+        Err(TabularError::MalformedCsv { .. })
+    ));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn delimiter_detection_scores_more_than_twenty_rows_and_quoted_commas() {
+    let mut csv = String::from("Quantity,Designator,Footprint,Value\n");
+    for row in 0..25 {
+        csv.push_str(&format!("2,\"C{row},C{}\",0603,100nF\n", row + 100));
+    }
+    let path = temp_csv(&csv);
+    let result = inspect_tabular_bom(&path, None).expect("parse long quoted csv");
+    let ImportPreview::Ready(bom) = result else {
+        panic!("expected ready")
+    };
+    assert_eq!(bom.groups[0].designators.len(), 50);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn unsupported_nonblank_side_is_an_explicit_error() {
+    let path = temp_csv("Quantity,Designator,Footprint,Value,Side\n1,C1,0603,10k,Middle\n");
+    assert!(matches!(
+        inspect_tabular_bom(&path, None),
+        Err(TabularError::InvalidSide { .. })
+    ));
     fs::remove_file(path).unwrap();
 }
 
 #[test]
 fn side_column_creates_placements_without_inventing_side_when_absent() {
     let path = std::env::temp_dir().join(format!("partnest-side-{}.csv", std::process::id()));
-    fs::write(&path, "数量,位号,封装,参数,板面\n2,C1,C0603,100nF,Bottom\n").unwrap();
+    fs::write(&path, "数量,位号,封装,参数,板面\n1,C1,C0603,100nF,Bottom\n").unwrap();
     let result = inspect_tabular_bom(&path, None).expect("parse side fixture");
     let ImportPreview::Ready(bom) = result else {
         panic!("side fixture should be ready")
@@ -101,4 +259,14 @@ fn side_column_creates_placements_without_inventing_side_when_absent() {
         Some(partnest_desktop_lib::bom::types::BomSide::Bottom)
     );
     fs::remove_file(path).unwrap();
+}
+
+fn temp_csv(contents: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "partnest-tabular-{}-{}.csv",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&path, contents).unwrap();
+    path
 }
