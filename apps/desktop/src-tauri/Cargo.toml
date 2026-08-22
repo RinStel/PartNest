@@ -11,7 +11,10 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+calamine = "0.36.1"
 chrono = "0.4.45"
+csv = "1.4.0"
+encoding_rs = "0.8.35"
 rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }

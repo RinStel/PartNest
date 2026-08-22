@@ -1,0 +1,3 @@
+Quantity,Designator,Footprint,Value,Manufacturer Part,Manufacturer,Supplier Part
+2,"C1,C2",0603,100nF,CC0603,Acme,C100
+1,R1,0603,10k,R0603,Acme,R100

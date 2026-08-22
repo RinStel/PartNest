@@ -1,3 +1,4 @@
+pub mod bom;
 pub mod commands;
 pub mod db;
 
