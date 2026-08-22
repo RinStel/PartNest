@@ -15,4 +15,10 @@ describe("App shell", () => {
     fireEvent.click(screen.getAllByRole("link", { name: "BOM" })[0]);
     expect(screen.getByRole("heading", { name: "BOM 分析" })).toBeInTheDocument();
   });
+
+  it("mounts the welding workspace at the welding destination", () => {
+    render(<App />);
+    fireEvent.click(screen.getAllByRole("link", { name: "焊接工作台" })[0]);
+    expect(screen.getByRole("heading", { name: "焊接工作台" })).toBeInTheDocument();
+  });
 });
