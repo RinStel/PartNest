@@ -1,1 +1,3 @@
-fn main() { partnest_desktop_lib::run(); }
+fn main() {
+    partnest_desktop_lib::run();
+}

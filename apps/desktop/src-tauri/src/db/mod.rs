@@ -8,6 +8,13 @@ use std::path::Path;
 
 const INITIAL_MIGRATION: &str = include_str!("../../migrations/0001_initial.sql");
 
+/// A versioned SQL migration. Migrations are applied in one exclusive transaction.
+#[derive(Debug, Clone, Copy)]
+pub struct Migration<'a> {
+    pub version: i64,
+    pub sql: &'a str,
+}
+
 /// An opened PartNest database connection.
 pub struct Database {
     connection: Connection,
@@ -17,14 +24,31 @@ impl Database {
     /// Open a database file, configure SQLite, and apply all pending migrations.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open(path)?;
-        connection.execute_batch(
-            "PRAGMA foreign_keys = ON;
-             PRAGMA journal_mode = WAL;
-             PRAGMA busy_timeout = 5000;",
-        )?;
-
         let mut database = Self { connection };
-        database.apply_migrations()?;
+        database.configure()?;
+        database.apply_migrations(&[Migration {
+            version: 1,
+            sql: INITIAL_MIGRATION,
+        }])?;
+        Ok(database)
+    }
+
+    /// Open `partnest.db` below an application data directory, creating it when needed.
+    pub fn open_app_data_dir(app_data_dir: impl AsRef<Path>) -> Result<Self> {
+        std::fs::create_dir_all(app_data_dir.as_ref())
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        Self::open(app_data_dir.as_ref().join("partnest.db"))
+    }
+
+    /// Open a database with an explicit migration list for deterministic migration tests.
+    pub fn open_with_migrations(
+        path: impl AsRef<Path>,
+        migrations: &[Migration<'_>],
+    ) -> Result<Self> {
+        let connection = Connection::open(path)?;
+        let mut database = Self { connection };
+        database.configure()?;
+        database.apply_migrations(migrations)?;
         Ok(database)
     }
 
@@ -38,7 +62,15 @@ impl Database {
         self.connection.unchecked_transaction()
     }
 
-    fn apply_migrations(&mut self) -> Result<()> {
+    fn configure(&self) -> Result<()> {
+        self.connection.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;",
+        )
+    }
+
+    fn apply_migrations(&mut self, migrations: &[Migration<'_>]) -> Result<()> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Exclusive)?;
@@ -49,17 +81,19 @@ impl Database {
             );",
         )?;
 
-        let applied: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 1)",
-            [],
-            |row| row.get(0),
-        )?;
-        if !applied {
-            transaction.execute_batch(INITIAL_MIGRATION)?;
-            transaction.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?1)",
-                [models::utc_now()],
+        for migration in migrations {
+            let applied: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+                [migration.version],
+                |row| row.get(0),
             )?;
+            if !applied {
+                transaction.execute_batch(migration.sql)?;
+                transaction.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                    (migration.version, models::utc_now()),
+                )?;
+            }
         }
         transaction.commit()
     }

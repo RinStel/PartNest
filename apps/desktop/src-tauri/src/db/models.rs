@@ -21,6 +21,17 @@ pub struct BoxRecord {
     pub cols: i64,
 }
 
+impl BoxRecord {
+    pub fn new(name: String, rows: i64, cols: i64) -> Self {
+        Self {
+            id: new_id(),
+            name,
+            rows,
+            cols,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartRecord {
     pub id: String,
@@ -35,4 +46,23 @@ pub struct PartRecord {
     pub slot: String,
     pub note: Option<String>,
     pub version: i64,
+}
+
+impl PartRecord {
+    pub fn new(name: String, box_id: String, slot: String, quantity: i64) -> Self {
+        Self {
+            id: new_id(),
+            name,
+            category: None,
+            package: None,
+            manufacturer: None,
+            mpn: None,
+            lcsc_code: None,
+            quantity,
+            box_id,
+            slot,
+            note: None,
+            version: 1,
+        }
+    }
 }
