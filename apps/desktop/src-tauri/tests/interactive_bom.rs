@@ -1,3 +1,4 @@
+use partnest_desktop_lib::bom::bridge::{decode_selection_message, BridgeError};
 use partnest_desktop_lib::bom::interactive_html::{parse_interactive_html, InteractiveHtmlError};
 use partnest_desktop_lib::bom::types::BomSide;
 use std::fs;
@@ -52,6 +53,55 @@ fn rejects_missing_core_sections_without_partial_groups() {
         Err(InteractiveHtmlError::UnsupportedInteractiveBom(_))
     ));
     fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn scanner_ignores_decoys_comments_and_all_javascript_string_forms() {
+    let source = r#"
+      const a = "window.files = {\"bad\":true}";
+      const b = `window.files = {\"bad\":true}`;
+      // window.files = {"bad":true}
+      /* window.files = {"bad":true} */
+      window.files /* comment */ = {
+        "bom_merge": {"data": {"comp_info": {"C1": {"Name": "x" /* inline */}},
+        "designator_info": {"top": [{"des": "R1", "lc_code": "C1"}], "bottom": []}}}
+      };
+    "#;
+    let bom =
+        partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(source, "scanner")
+            .unwrap();
+    assert_eq!(bom.groups[0].designators, ["R1"]);
+}
+
+#[test]
+fn bridge_rejects_oversized_messages_and_designators() {
+    let many = (0..513)
+        .map(|i| format!("\"R{i}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let too_many =
+        format!(r#"{{"type":"partnest:bom-selection","token":"t","designators":[{many}]}}"#);
+    assert!(matches!(
+        decode_selection_message(&too_many),
+        Err(BridgeError::TooManyDesignators)
+    ));
+    let too_long = format!(
+        r#"{{"type":"partnest:bom-selection","token":"t","designators":["{}"]}}"#,
+        "R".repeat(64)
+    );
+    assert!(decode_selection_message(&too_long).is_ok());
+    let much_too_long = format!(
+        r#"{{"type":"partnest:bom-selection","token":"t","designators":["{}"]}}"#,
+        "R".repeat(65)
+    );
+    assert!(matches!(
+        decode_selection_message(&much_too_long),
+        Err(BridgeError::DesignatorTooLong)
+    ));
+    assert!(matches!(
+        decode_selection_message(&"x".repeat(65 * 1024)),
+        Err(BridgeError::MessageTooLarge)
+    ));
 }
 
 fn sha256(path: &Path) -> String {

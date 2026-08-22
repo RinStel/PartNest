@@ -1,9 +1,13 @@
 /* partnest bridge-v1: intentionally limited to one postMessage shape. */
+/* The host receiver must also require event.source === iframe.contentWindow. */
 (function (window, document) {
   "use strict";
   const config = window.__PARTNEST_BOM_BRIDGE_V1__;
   if (!config || typeof config.token !== "string" || !Array.isArray(config.designators)) return;
   const known = new Set(config.designators);
+  const targetOrigin = typeof config.targetOrigin === "string" && /^https?:\/\/[^/\s]+$/.test(config.targetOrigin)
+    ? config.targetOrigin
+    : "*";
   const scan = () => {
     const selected = [];
     document.querySelectorAll(".selected, [aria-selected='true'], [data-selected='true']").forEach((node) => {
@@ -12,7 +16,7 @@
         if (known.has(designator) && !selected.includes(designator)) selected.push(designator);
       });
     });
-    if (selected.length) window.parent.postMessage({ type: "partnest:bom-selection", token: config.token, designators: selected }, "*");
+    if (selected.length) window.parent.postMessage({ type: "partnest:bom-selection", token: config.token, designators: selected }, targetOrigin);
   };
   let frame = 0;
   document.addEventListener("click", () => {

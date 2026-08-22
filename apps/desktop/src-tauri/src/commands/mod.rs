@@ -1,3 +1,4 @@
+pub mod bom;
 pub mod boxes;
 pub mod parts;
 

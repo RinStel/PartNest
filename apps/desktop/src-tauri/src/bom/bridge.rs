@@ -1,7 +1,11 @@
 //! Versioned, narrow message contract between the cached BOM iframe and Rust.
 
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, fmt};
+use std::{collections::HashSet, fmt};
+
+pub const MAX_SELECTION_JSON_BYTES: usize = 64 * 1024;
+pub const MAX_DESIGNATORS: usize = 512;
+pub const MAX_DESIGNATOR_CHARS: usize = 64;
 
 pub const BRIDGE_VERSION: &str = "bridge-v1";
 
@@ -22,6 +26,10 @@ pub enum BridgeError {
     DuplicateDesignator,
     UnknownDesignator,
     CrossGroupSelection,
+    MixedSideSelection,
+    TooManyDesignators,
+    DesignatorTooLong,
+    MessageTooLarge,
 }
 impl fmt::Display for BridgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -32,6 +40,10 @@ impl fmt::Display for BridgeError {
             Self::DuplicateDesignator => f.write_str("duplicate designator"),
             Self::UnknownDesignator => f.write_str("unknown designator"),
             Self::CrossGroupSelection => f.write_str("designators belong to different BOM groups"),
+            Self::MixedSideSelection => f.write_str("designators belong to different board sides"),
+            Self::TooManyDesignators => f.write_str("too many selected designators"),
+            Self::DesignatorTooLong => f.write_str("designator is too long"),
+            Self::MessageTooLarge => f.write_str("BOM bridge message is too large"),
         }
     }
 }
@@ -42,6 +54,9 @@ pub type SelectionError = BridgeError;
 impl std::error::Error for BridgeError {}
 
 pub fn decode_selection_message(json: &str) -> Result<BomSelectionMessage, BridgeError> {
+    if json.len() > MAX_SELECTION_JSON_BYTES {
+        return Err(BridgeError::MessageTooLarge);
+    }
     let message: BomSelectionMessage = serde_json::from_str(json)
         .map_err(|error| BridgeError::InvalidMessage(error.to_string()))?;
     if message.message_type != "partnest:bom-selection" {
@@ -54,6 +69,9 @@ pub fn decode_selection_message(json: &str) -> Result<BomSelectionMessage, Bridg
             "token and designators are required".into(),
         ));
     }
+    if message.designators.len() > MAX_DESIGNATORS {
+        return Err(BridgeError::TooManyDesignators);
+    }
     if message
         .designators
         .iter()
@@ -63,7 +81,14 @@ pub fn decode_selection_message(json: &str) -> Result<BomSelectionMessage, Bridg
             "designators must be non-empty and trimmed".into(),
         ));
     }
-    let unique = message.designators.iter().collect::<BTreeSet<_>>();
+    if message
+        .designators
+        .iter()
+        .any(|designator| designator.chars().count() > MAX_DESIGNATOR_CHARS)
+    {
+        return Err(BridgeError::DesignatorTooLong);
+    }
+    let unique = message.designators.iter().collect::<HashSet<_>>();
     if unique.len() != message.designators.len() {
         return Err(BridgeError::InvalidMessage("duplicate designator".into()));
     }

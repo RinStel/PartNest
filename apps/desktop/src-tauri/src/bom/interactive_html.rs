@@ -55,7 +55,7 @@ pub fn parse_interactive_html_text(
 ) -> Result<NormalizedBomDto, InteractiveHtmlError> {
     let object = find_window_files_object(source)
         .ok_or_else(|| unsupported("window.files object is missing"))?;
-    let files: Value = serde_json::from_str(object).map_err(json_error)?;
+    let files: Value = serde_json::from_str(&strip_js_comments(object)).map_err(json_error)?;
     let merge = nested_json(files.get("bom_merge"), "bom_merge")?;
     let data = nested_json(merge.get("data"), "bom_merge.data")?;
     let comp_info = data
@@ -151,43 +151,141 @@ pub fn parse_interactive_html_text(
 }
 
 fn find_window_files_object(source: &str) -> Option<&str> {
-    let marker = source.find("window.files")?;
-    let equals = source[marker..].find('=')? + marker + 1;
     let bytes = source.as_bytes();
-    let mut start = equals;
-    while bytes.get(start).is_some_and(u8::is_ascii_whitespace) {
-        start += 1;
-    }
-    if bytes.get(start) != Some(&b'{') {
-        return None;
-    }
-    let mut depth = 0usize;
-    let mut quoted = false;
-    let mut escaped = false;
-    for (offset, &byte) in bytes[start..].iter().enumerate() {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                quoted = false;
+    let marker = b"window.files";
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' | b'\'' | b'`' => index = skip_js_string(bytes, index)?,
+            b'/' if bytes.get(index + 1) == Some(&b'/') => index = skip_line_comment(bytes, index),
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = skip_block_comment(bytes, index)?
             }
-            continue;
-        }
-        match byte {
-            b'"' => quoted = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(&source[start..=start + offset]);
+            _ if bytes[index..].starts_with(marker)
+                && (index == 0 || !is_identifier(bytes[index - 1]))
+                && !bytes
+                    .get(index + marker.len())
+                    .is_some_and(|byte| is_identifier(*byte)) =>
+            {
+                let mut cursor = skip_space_and_comments(bytes, index + marker.len())?;
+                if bytes.get(cursor) == Some(&b'=') {
+                    cursor = skip_space_and_comments(bytes, cursor + 1)?;
+                    if bytes.get(cursor) == Some(&b'{') {
+                        let end = scan_balanced_object(bytes, cursor)?;
+                        return Some(&source[cursor..=end]);
+                    }
                 }
+                index += marker.len();
             }
-            _ => {}
+            _ => index += 1,
         }
     }
     None
+}
+
+fn scan_balanced_object(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut index = start;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' | b'\'' | b'`' => index = skip_js_string(bytes, index)?,
+            b'/' if bytes.get(index + 1) == Some(&b'/') => index = skip_line_comment(bytes, index),
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = skip_block_comment(bytes, index)?
+            }
+            b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn skip_js_string(bytes: &[u8], start: usize) -> Option<usize> {
+    let quote = *bytes.get(start)?;
+    let mut index = start + 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index += 2;
+            continue;
+        }
+        if bytes[index] == quote {
+            return Some(index + 1);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn skip_line_comment(bytes: &[u8], start: usize) -> usize {
+    bytes[start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|offset| start + offset + 1)
+        .unwrap_or(bytes.len())
+}
+
+fn skip_block_comment(bytes: &[u8], start: usize) -> Option<usize> {
+    let end = bytes[start + 2..]
+        .windows(2)
+        .position(|pair| pair == b"*/")?;
+    Some(start + 2 + end + 2)
+}
+
+fn skip_space_and_comments(bytes: &[u8], mut index: usize) -> Option<usize> {
+    loop {
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if bytes.get(index) == Some(&b'/') && bytes.get(index + 1) == Some(&b'/') {
+            index = skip_line_comment(bytes, index);
+        } else if bytes.get(index) == Some(&b'/') && bytes.get(index + 1) == Some(&b'*') {
+            index = skip_block_comment(bytes, index)?;
+        } else {
+            return Some(index);
+        }
+    }
+}
+
+fn is_identifier(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+}
+
+fn strip_js_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' | b'\'' | b'`' => {
+                let end = skip_js_string(bytes, index).unwrap_or(bytes.len());
+                output.extend_from_slice(&bytes[index..end]);
+                index = end;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index = skip_line_comment(bytes, index);
+                output.push(b'\n');
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = skip_block_comment(bytes, index).unwrap_or(bytes.len());
+                output.push(b' ');
+            }
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(output).unwrap_or_default()
 }
 
 fn nested_json(value: Option<&Value>, name: &str) -> Result<Value, InteractiveHtmlError> {
