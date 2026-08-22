@@ -4,3 +4,7 @@ dist/
 target/
 .env*
 *.bom
+.superpowers/
+BOM_*.csv
+BOM_*.xlsx
+InteractiveBOM_*.html
