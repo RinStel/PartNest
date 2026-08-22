@@ -1,12 +1,6 @@
-.superpowers/
-
-# User-provided BOM samples stay local.
-BOM_*.csv
-BOM_*.xlsx
-InteractiveBOM_*.html
-
-# Node, Rust, and Tauri build outputs.
 node_modules/
-target/
+.pnpm-store/
 dist/
-*.log
+target/
+.env*
+*.bom

@@ -1,0 +1,7 @@
+{
+  "name": "@partnest/domain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "vitest run --passWithNoTests", "build": "tsc -p tsconfig.json" }
+}
