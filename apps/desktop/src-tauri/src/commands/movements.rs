@@ -32,6 +32,8 @@ struct RawMovement {
     part_name: Option<String>,
     movement_type: String,
     quantity: i64,
+    before_quantity: Option<i64>,
+    after_quantity: Option<i64>,
     reason: String,
     bom_display_name: Option<String>,
     session_id: Option<String>,
@@ -55,6 +57,7 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
 
     let mut statement = db.connection().prepare(
         "SELECT m.id, m.part_id, p.name, m.movement_type, m.quantity, m.reason,
+                m.before_quantity, m.after_quantity,
                 bf.display_name, m.session_id, m.component_key, m.side,
                 EXISTS(SELECT 1 FROM welding_sessions active_session
                        WHERE active_session.id = m.session_id AND active_session.status = 'active'),
@@ -70,7 +73,7 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
            LEFT JOIN parts p ON p.id = m.part_id
            LEFT JOIN welding_sessions ws ON ws.id = m.session_id
            LEFT JOIN bom_files bf ON bf.id = ws.bom_file_id
-          ORDER BY m.created_at DESC, m.id DESC",
+           ORDER BY m.created_at DESC, COALESCE(m.movement_sequence, 0) DESC, m.id DESC",
     )?;
     let rows = statement.query_map([], |row| {
         Ok(RawMovement {
@@ -80,34 +83,39 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
             movement_type: row.get(3)?,
             quantity: row.get(4)?,
             reason: row.get(5)?,
-            bom_display_name: row.get(6)?,
-            session_id: row.get(7)?,
-            component_key: row.get(8)?,
-            side: row.get(9)?,
-            session_active: row.get(10)?,
-            has_progress: row.get(11)?,
-            created_at: row.get(12)?,
-            reverses_movement_id: row.get(13)?,
-            has_reversal: row.get(14)?,
+            before_quantity: row.get(6)?,
+            after_quantity: row.get(7)?,
+            bom_display_name: row.get(8)?,
+            session_id: row.get(9)?,
+            component_key: row.get(10)?,
+            side: row.get(11)?,
+            session_active: row.get(12)?,
+            has_progress: row.get(13)?,
+            created_at: row.get(14)?,
+            reverses_movement_id: row.get(15)?,
+            has_reversal: row.get(16)?,
         })
     })?;
 
     let mut result = Vec::new();
     for row in rows {
         let movement = row?;
-        let (before_quantity, after_quantity) = if let Some(part_id) = &movement.part_id {
-            let after = stock
-                .get(part_id)
-                .copied()
-                .ok_or_else(|| CommandError::Database("流水关联的器件不存在".into()))?;
-            let before = after
-                .checked_sub(movement.quantity)
-                .ok_or_else(|| CommandError::Database("流水库存数量超出范围".into()))?;
-            stock.insert(part_id.clone(), before);
-            (Some(before), Some(after))
-        } else {
-            (None, None)
-        };
+        let (before_quantity, after_quantity) =
+            if movement.before_quantity.is_some() && movement.after_quantity.is_some() {
+                (movement.before_quantity, movement.after_quantity)
+            } else if let Some(part_id) = &movement.part_id {
+                let after = stock
+                    .get(part_id)
+                    .copied()
+                    .ok_or_else(|| CommandError::Database("流水关联的器件不存在".into()))?;
+                let before = after
+                    .checked_sub(movement.quantity)
+                    .ok_or_else(|| CommandError::Database("流水库存数量超出范围".into()))?;
+                stock.insert(part_id.clone(), before);
+                (Some(before), Some(after))
+            } else {
+                (None, None)
+            };
         let reversible = movement.movement_type == "consume"
             && movement.quantity < 0
             && movement.reverses_movement_id.is_none()

@@ -44,4 +44,27 @@ describe("InventoryPage", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "调整数量" })[0]);
     await waitFor(() => expect(api.adjustStock).toHaveBeenCalledWith("part-1", 2, "手工调整"));
   });
+
+  it("normalizes nullable metadata and exposes every editable field", async () => {
+    const nullablePart = {
+      id: "part-null", name: "capacitor", category: null, package: null, manufacturer: null,
+      mpn: null, lcsc_code: null, quantity: 0, box_id: "box-1", slot: "A0", note: null, version: 1,
+    };
+    const api = {
+      listParts: vi.fn().mockResolvedValue([nullablePart]),
+      createPart: vi.fn(), updatePart: vi.fn().mockResolvedValue({ ...nullablePart, name: "edited", version: 2 }),
+      adjustStock: vi.fn(),
+    };
+    render(<InventoryPage api={api} />);
+    await screen.findByText("capacitor");
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    for (const label of ["名称", "分类", "封装", "制造商", "MPN", "LCSC", "备注", "收纳盒 ID", "盒位"]) {
+      expect(screen.getByLabelText(label)).toBeInTheDocument();
+    }
+    expect(screen.getByLabelText("分类")).toHaveValue("");
+    expect(screen.getByLabelText("备注")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("制造商"), { target: { value: "Acme" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存器件" }));
+    await waitFor(() => expect(api.updatePart).toHaveBeenCalledWith("part-null", 1, expect.objectContaining({ manufacturer: "Acme", category: "" })));
+  });
 });

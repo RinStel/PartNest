@@ -34,6 +34,13 @@ fn movements_are_newest_first_with_stock_before_after_and_reversal_visibility() 
     )
     .unwrap();
     let part = create_part_service(&db, part_input(&box_record.id)).unwrap();
+    // This fixture supplies its own historical movement timeline.
+    db.connection()
+        .execute(
+            "DELETE FROM inventory_movements WHERE part_id = ?1",
+            params![part.id],
+        )
+        .unwrap();
     db.connection()
         .execute(
             "INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES ('bom-1', 'board.html', 'Board note', 'hash', 'hash.html')",

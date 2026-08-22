@@ -5,7 +5,7 @@ use crate::{
     commands::CommandError,
     db::{new_id, utc_now, Database},
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,6 +70,16 @@ fn status(consumed: i64, required: i64) -> &'static str {
     } else {
         "partial"
     }
+}
+
+fn next_movement_sequence(transaction: &Transaction<'_>) -> Result<i64, CommandError> {
+    transaction
+        .query_row(
+            "SELECT COALESCE(MAX(movement_sequence), 0) + 1 FROM inventory_movements",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(CommandError::from)
 }
 
 fn validate_input(input: &ConfirmTakeInput) -> Result<(), CommandError> {
@@ -174,6 +184,9 @@ pub fn confirm_take(db: &Database, input: ConfirmTakeInput) -> Result<TakeResult
     let next_version = version
         .checked_add(1)
         .ok_or_else(|| CommandError::Validation("器件版本超出范围".into()))?;
+    let sequence = next_movement_sequence(&tx)?;
+    let confirmation_designators = serde_json::to_string(&input.designators)
+        .map_err(|error| CommandError::Validation(format!("位号无法记录: {error}")))?;
 
     let existing = tx
         .query_row(
@@ -205,12 +218,16 @@ pub fn confirm_take(db: &Database, input: ConfirmTakeInput) -> Result<TakeResult
     )?;
     let movement_id = new_id();
     tx.execute(
-        "INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side) VALUES (?1, ?2, ?3, 'consume', ?4, ?5, ?6, ?7)",
-        params![movement_id, input.part_id, input.session_id, -input.take_quantity, "welding take", input.component_key, side],
+        "INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side, before_quantity, after_quantity, movement_sequence, bom_quantity, confirmation_designators) VALUES (?1, ?2, ?3, 'consume', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![movement_id, input.part_id, input.session_id, -input.take_quantity, "welding take", input.component_key, side, quantity, remaining, sequence, input.bom_quantity, confirmation_designators],
     )?;
     tx.execute(
         "INSERT INTO welding_progress (id, session_id, component_key, side, part_id, required_quantity, taken_quantity, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(session_id, component_key, side) DO UPDATE SET part_id = excluded.part_id, required_quantity = excluded.required_quantity, taken_quantity = excluded.taken_quantity, updated_at = excluded.updated_at",
         params![new_id(), input.session_id, input.component_key, side, input.part_id, required, consumed, utc_now()],
+    )?;
+    tx.execute(
+        "UPDATE welding_sessions SET updated_at = ?1 WHERE id = ?2",
+        params![utc_now(), input.session_id],
     )?;
     tx.commit()?;
     Ok(result_from_progress(
@@ -231,13 +248,22 @@ pub fn reverse_take(db: &Database, movement_id: &str) -> Result<TakeResult, Comm
     let tx = db.transaction()?;
     let original = tx
         .query_row(
-            "SELECT part_id, session_id, component_key, side, movement_type, quantity FROM inventory_movements WHERE id = ?1",
+            "SELECT part_id, session_id, component_key, side, movement_type, quantity, bom_quantity, confirmation_designators FROM inventory_movements WHERE id = ?1",
             [movement_id],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, i64>(5)?)),
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, i64>(5)?, row.get::<_, Option<i64>>(6)?, row.get::<_, Option<String>>(7)?)),
         )
         .optional()?
         .ok_or_else(|| CommandError::NotFound("库存流水不存在".into()))?;
-    let (part_id, session_id, component_key, side, movement_type, quantity) = original;
+    let (
+        part_id,
+        session_id,
+        component_key,
+        side,
+        movement_type,
+        quantity,
+        bom_quantity,
+        confirmation_designators,
+    ) = original;
     if movement_type != "consume" || quantity >= 0 {
         return Err(CommandError::Validation("只有取用流水可以撤销".into()));
     }
@@ -272,14 +298,15 @@ pub fn reverse_take(db: &Database, movement_id: &str) -> Result<TakeResult, Comm
     let next_version = version
         .checked_add(1)
         .ok_or_else(|| CommandError::Validation("器件版本超出范围".into()))?;
+    let sequence = next_movement_sequence(&tx)?;
     tx.execute(
         "UPDATE parts SET quantity = ?1, version = ?2, updated_at = ?3 WHERE id = ?4 AND version = ?5",
         params![next_stock, next_version, utc_now(), part_id, version],
     )?;
     let reversal_id = new_id();
     tx.execute(
-        "INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, reverses_movement_id, component_key, side) VALUES (?1, ?2, ?3, 'reverse', ?4, ?5, ?6, ?7, ?8)",
-        params![reversal_id, part_id, session_id, restore, "welding take reversal", movement_id, component_key, side],
+        "INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, reverses_movement_id, component_key, side, before_quantity, after_quantity, movement_sequence, bom_quantity, confirmation_designators) VALUES (?1, ?2, ?3, 'reverse', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![reversal_id, part_id, session_id, restore, "welding take reversal", movement_id, component_key, side, stock, next_stock, sequence, bom_quantity, confirmation_designators],
     )?;
     let (required, part): (i64, Option<String>) = tx
         .query_row(
@@ -296,6 +323,10 @@ pub fn reverse_take(db: &Database, movement_id: &str) -> Result<TakeResult, Comm
     tx.execute(
         "UPDATE welding_progress SET taken_quantity = ?1, updated_at = ?2 WHERE session_id = ?3 AND component_key = ?4 AND side = ?5",
         params![consumed, utc_now(), session_id, component_key, side],
+    )?;
+    tx.execute(
+        "UPDATE welding_sessions SET updated_at = ?1 WHERE id = ?2",
+        params![utc_now(), session_id],
     )?;
     tx.commit()?;
     let side = side_from_text(&side)?;

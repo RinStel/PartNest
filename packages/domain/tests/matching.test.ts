@@ -53,4 +53,17 @@ describe("matchBomGroup", () => {
   test("does not use MPN when a BOM LCSC code is present", () => {
     expect(matchBomGroup(group({ lcscCode: "C1", mpn: "ABC" }), [part({ mpn: "abc" })])).toEqual({ kind: "none" });
   });
+
+  test("does not choose arbitrarily when MPN matches multiple parts", () => {
+    expect(matchBomGroup(group({ mpn: "ABC" }), [
+      part({ id: "one", mpn: "abc" }),
+      part({ id: "two", mpn: "ABC" }),
+    ])).toEqual({ kind: "candidate", partIds: ["one", "two"] });
+  });
+
+  test("does not fall back to name when a supplied MPN conflicts", () => {
+    expect(matchBomGroup(group({ name: "10k", package: "0603", mpn: "MISSING" }), [
+      part({ id: "same-name", name: "10k", package: "0603", mpn: "OTHER" }),
+    ])).toEqual({ kind: "none" });
+  });
 });

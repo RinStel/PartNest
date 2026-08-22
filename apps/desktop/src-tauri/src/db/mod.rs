@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 const INITIAL_MIGRATION: &str = include_str!("../../migrations/0001_initial.sql");
 const WELDING_MOVEMENT_METADATA_MIGRATION: &str =
     include_str!("../../migrations/0002_welding_movement_metadata.sql");
+const MOVEMENT_AUDIT_AND_ACTIVE_SESSION_MIGRATION: &str =
+    include_str!("../../migrations/0003_movement_audit_and_active_session.sql");
 
 /// A versioned SQL migration. Migrations are applied in one exclusive transaction.
 #[derive(Debug, Clone, Copy)]
@@ -39,6 +41,10 @@ impl Database {
             Migration {
                 version: 2,
                 sql: WELDING_MOVEMENT_METADATA_MIGRATION,
+            },
+            Migration {
+                version: 3,
+                sql: MOVEMENT_AUDIT_AND_ACTIVE_SESSION_MIGRATION,
             },
         ])?;
         Ok(database)
@@ -94,6 +100,7 @@ impl Database {
     }
 
     fn apply_migrations(&mut self, migrations: &[Migration<'_>]) -> Result<()> {
+        validate_migration_list(migrations)?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Exclusive)?;
@@ -103,6 +110,31 @@ impl Database {
                 applied_at TEXT NOT NULL
             );",
         )?;
+
+        let applied_versions = transaction
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")?
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let known_versions = migrations
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<std::collections::BTreeSet<_>>();
+        for version in &applied_versions {
+            if !known_versions.contains(version) {
+                return Err(migration_error(format!(
+                    "database schema version {version} is newer or unsupported"
+                )));
+            }
+        }
+        if let Some(max_applied) = applied_versions.iter().max() {
+            for version in 1..=*max_applied {
+                if !applied_versions.contains(&version) {
+                    return Err(migration_error(format!(
+                        "database schema migration gap at version {version}"
+                    )));
+                }
+            }
+        }
 
         for migration in migrations {
             let applied: bool = transaction.query_row(
@@ -120,4 +152,35 @@ impl Database {
         }
         transaction.commit()
     }
+}
+
+#[derive(Debug)]
+struct MigrationValidationError(String);
+
+impl std::fmt::Display for MigrationValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for MigrationValidationError {}
+
+fn migration_error(message: String) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(MigrationValidationError(message)))
+}
+
+fn validate_migration_list(migrations: &[Migration<'_>]) -> Result<()> {
+    if migrations.is_empty() || migrations[0].version != 1 {
+        return Err(migration_error(
+            "migration set must start at version 1".into(),
+        ));
+    }
+    for (expected, migration) in (1_i64..).zip(migrations) {
+        if migration.version != expected {
+            return Err(migration_error(format!(
+                "migration set has a gap at version {expected}"
+            )));
+        }
+    }
+    Ok(())
 }

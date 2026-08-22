@@ -119,19 +119,20 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "needsMapping" | "unsupported" | "error">("idle");
   const [error, setError] = useState("");
   const [path, setPath] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [headers, setHeaders] = useState<string[]>([]);
   const [mapping, setMapping] = useState<FieldMapping>({});
   const [bom, setBom] = useState<NormalizedBomDto | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
   const [rows, setRows] = useState<BomAnalysisRow[]>([]);
 
-  async function inspect(sourcePath: string, supplied?: FieldMapping) {
+  async function inspect(sourcePath: string, supplied?: FieldMapping, suppliedDisplayName?: string) {
     const extension = sourcePath.slice(sourcePath.lastIndexOf(".")).toLowerCase();
     if (!supported.has(extension)) { setStatus("unsupported"); setError("不支持的 BOM 格式"); return; }
     setPath(sourcePath); setError(""); setStatus("loading");
     try {
       const result = extension === ".html"
-        ? toPreview(await api.cacheInteractiveBom(sourcePath, sourcePath.split(/[\\/]/).pop() ?? sourcePath))
+        ? toPreview(await api.cacheInteractiveBom(sourcePath, (suppliedDisplayName ?? displayName).trim() || sourcePath.split(/[\\/]/).pop() || sourcePath))
         : toPreview(await api.inspectTabularBom(sourcePath, supplied));
       if (result.kind === "NeedsMapping") {
         setHeaders(result.headers); setMapping(result.suggestions ?? {}); setStatus("needsMapping"); return;
@@ -142,14 +143,21 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
     } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
   }
 
-  async function chooseFile() { const selected = await pickFile(); if (selected) await inspect(selected); }
+  async function chooseFile() {
+    const selected = await pickFile();
+    if (!selected) return;
+    const defaultName = selected.split(/[\\/]/).pop() ?? selected;
+    const remark = displayName.trim() || defaultName;
+    if (!displayName.trim()) setDisplayName(defaultName);
+    await inspect(selected, undefined, remark);
+  }
   async function submitMapping(next = mapping) { setMapping(next); if (path) await inspect(path, next); }
   function confirmMatch(componentKey: string, partId: string) {
     if (!bom) return;
     const next = createAnalysisRows(bom, parts, Object.fromEntries(rows.map((row) => [row.componentKey, row.partId ?? ""]).filter(([, id]) => id).concat([[componentKey, partId]])));
     setRows(next);
   }
-  return { status, error, path, headers, mapping, setMapping, bom, rows, chooseFile, submitMapping, confirmMatch, fieldNames };
+  return { status, error, path, displayName, setDisplayName, headers, mapping, setMapping, bom, rows, chooseFile, inspect, submitMapping, confirmMatch, fieldNames };
 }
 
 export { fieldNames };

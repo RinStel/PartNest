@@ -7,14 +7,23 @@ const normalizeCandidate = (value: string): string => trim(value).toLowerCase();
 export function matchBomGroup(group: BomGroup, inventory: InventoryPart[]): MatchResult {
   const lcscCode = trim(group.lcscCode);
   if (lcscCode !== "") {
-    const exact = inventory.find((part) => trim(part.lcscCode) === lcscCode);
-    return exact ? { kind: "exact-lcsc", partId: exact.id } : { kind: "none" };
+    const lcscMatches = inventory
+      .filter((part) => trim(part.lcscCode) === lcscCode)
+      .map((part) => part.id);
+    if (lcscMatches.length === 1) return { kind: "exact-lcsc", partId: lcscMatches[0] };
+    return lcscMatches.length > 1 ? { kind: "candidate", partIds: lcscMatches } : { kind: "none" };
   }
 
   const mpn = normalizeMpn(group.mpn);
   if (mpn !== "") {
-    const exact = inventory.find((part) => normalizeMpn(part.mpn) === mpn);
-    if (exact) return { kind: "exact-mpn", partId: exact.id };
+    const mpnMatches = inventory
+      .filter((part) => normalizeMpn(part.mpn) === mpn)
+      .map((part) => part.id);
+    if (mpnMatches.length === 1) return { kind: "exact-mpn", partId: mpnMatches[0] };
+    if (mpnMatches.length > 1) return { kind: "candidate", partIds: mpnMatches };
+    // A supplied manufacturer part number is authoritative. Do not turn a
+    // conflicting identifier into a name/value match.
+    return { kind: "none" };
   }
 
   const value = normalizeCandidate(group.value);

@@ -8,7 +8,7 @@ export function BomImportPage({ api, pickFile }: { api?: BomImportApi; pickFile?
   const state = useBomImport({ api, pickFile });
   return <section aria-labelledby="bom-import-title">
     <h2 id="bom-import-title">BOM 分析</h2>
-    <label>选择 BOM 文件 <input type="file" accept=".html,.csv,.xlsx" readOnly /></label>
+    <label>BOM备注名 <input value={state.displayName} onChange={(event) => state.setDisplayName(event.target.value)} /></label>
     <button type="button" onClick={() => void state.chooseFile()}>选择文件</button>
     {state.error && <p role="alert">{state.error}</p>}
     {state.status === "needsMapping" && <FieldMappingDialog headers={state.headers} mapping={state.mapping} onChange={state.setMapping} onConfirm={() => void state.submitMapping()} />}

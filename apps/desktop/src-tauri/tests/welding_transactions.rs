@@ -112,6 +112,31 @@ fn top_and_bottom_takes_are_independent_and_additional_take_is_a_new_movement() 
             .unwrap(),
         6
     );
+    let audit = db
+        .connection()
+        .prepare(
+            "SELECT quantity, before_quantity, after_quantity, bom_quantity, confirmation_designators, movement_sequence FROM inventory_movements WHERE id = ?1",
+        )
+        .unwrap()
+        .query_row([top.movement_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(audit.0, -2);
+    assert_eq!((audit.1, audit.2), (10, 8));
+    assert_eq!(audit.3, 3);
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&audit.4).unwrap(),
+        ["R1"]
+    );
+    assert!(audit.5 > 0);
 }
 
 #[test]
@@ -375,4 +400,6 @@ fn migration_0002_upgrades_existing_welding_databases() {
         .unwrap();
     assert!(columns.iter().any(|column| column == "component_key"));
     assert!(columns.iter().any(|column| column == "side"));
+    assert!(columns.iter().any(|column| column == "before_quantity"));
+    assert!(columns.iter().any(|column| column == "movement_sequence"));
 }

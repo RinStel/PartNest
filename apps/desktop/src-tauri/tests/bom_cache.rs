@@ -1,5 +1,5 @@
 use partnest_desktop_lib::bom::bridge::BridgeError;
-use partnest_desktop_lib::bom::cache::{InteractiveBomCache, SelectionError};
+use partnest_desktop_lib::bom::cache::{CacheError, InteractiveBomCache, SelectionError};
 use partnest_desktop_lib::bom::types::BomSide;
 use partnest_desktop_lib::db::Database;
 use sha2::{Digest, Sha256};
@@ -161,6 +161,80 @@ fn resolver_authoritatively_rejects_oversized_direct_inputs() {
         cache.resolve_bom_selection(&session.token, &["".into()]),
         Err(BridgeError::EmptyDesignator)
     ));
+}
+
+#[test]
+fn rejects_untrusted_cache_name_that_escapes_cache_directory() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache_dir = root.path().join("cache");
+    let cache = InteractiveBomCache::new(&db, &cache_dir);
+    let session = cache.cache_interactive_bom(fixture(), "Fixture").unwrap();
+    db.connection()
+        .execute(
+            "UPDATE bom_files SET cache_name = ?1 WHERE id = ?2",
+            rusqlite::params!["..\\outside.html", session.bom_file_id],
+        )
+        .unwrap();
+    let restarted = InteractiveBomCache::new(&db, &cache_dir);
+    assert!(matches!(
+        restarted.restore_active_session(),
+        Err(CacheError::TamperedCache(_))
+    ));
+}
+
+#[test]
+fn identical_hash_reimport_updates_remark_and_keeps_one_current_session() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache_dir = root.path().join("cache");
+    let cache = InteractiveBomCache::new(&db, &cache_dir);
+    let first = cache
+        .cache_interactive_bom(fixture(), "First remark")
+        .unwrap();
+    let second = cache
+        .cache_interactive_bom(fixture(), "Second remark")
+        .unwrap();
+    assert_eq!(first.session_id, second.session_id);
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT display_name FROM bom_files WHERE id = ?1",
+                [&first.bom_file_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "Second remark"
+    );
+
+    let alternate = root.path().join("alternate.html");
+    let mut source = fs::read_to_string(fixture()).unwrap();
+    source.push_str("\n<!-- alternate source -->\n");
+    fs::write(&alternate, source).unwrap();
+    let third = cache
+        .cache_interactive_bom(&alternate, "Alternate")
+        .unwrap();
+    assert_ne!(third.session_id, second.session_id);
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM welding_sessions WHERE status = 'active'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT status FROM welding_sessions WHERE id = ?1",
+                [&second.session_id],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "cancelled"
+    );
 }
 
 fn hash(path: &Path) -> String {

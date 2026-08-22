@@ -111,6 +111,56 @@ pub fn resize_box_service(
     read_box(db, id)
 }
 
+/// Update a box's name and dimensions without ever discarding occupied slots.
+pub fn update_box_service(
+    db: &Database,
+    id: &str,
+    input: BoxInput,
+) -> Result<BoxView, CommandError> {
+    validate_dimensions(input.rows, input.cols)?;
+    let name = validate_name(&input.name, "收纳盒")?;
+    let occupied = db
+        .connection()
+        .prepare("SELECT slot FROM parts WHERE box_id = ?1 ORDER BY slot")?
+        .query_map([id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for slot in occupied {
+        if normalize_slot(&slot, input.rows, input.cols).is_err() {
+            return Err(CommandError::Validation(format!(
+                "目标规格包含不了已占用盒位 {slot}"
+            )));
+        }
+    }
+    let changed = db.connection().execute(
+        "UPDATE boxes SET name = ?1, rows = ?2, cols = ?3, updated_at = ?4 WHERE id = ?5",
+        params![name, input.rows, input.cols, utc_now(), id],
+    )?;
+    if changed != 1 {
+        return Err(CommandError::NotFound("收纳盒不存在".into()));
+    }
+    read_box(db, id)
+}
+
+/// Deleting a box is safe only when it has no parts. The FK restriction also
+/// remains enabled as a second line of defence.
+pub fn delete_box_service(db: &Database, id: &str) -> Result<(), CommandError> {
+    let occupied: i64 = db.connection().query_row(
+        "SELECT COUNT(*) FROM parts WHERE box_id = ?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    if occupied > 0 {
+        return Err(CommandError::Constraint("收纳盒仍有器件，不能删除".into()));
+    }
+    let changed = db
+        .connection()
+        .execute("DELETE FROM boxes WHERE id = ?1", [id])?;
+    if changed != 1 {
+        return Err(CommandError::NotFound("收纳盒不存在".into()));
+    }
+    Ok(())
+}
+
 #[tauri::command(rename = "list_boxes")]
 pub fn list_boxes(state: State<'_, Mutex<Database>>) -> Result<Vec<BoxView>, CommandError> {
     let db = state.lock().map_err(lock_error)?;
@@ -135,4 +185,20 @@ pub fn resize_box(
 ) -> Result<BoxView, CommandError> {
     let db = state.lock().map_err(lock_error)?;
     resize_box_service(&db, &id, rows, cols)
+}
+
+#[tauri::command(rename = "update_box")]
+pub fn update_box(
+    state: State<'_, Mutex<Database>>,
+    id: String,
+    input: BoxInput,
+) -> Result<BoxView, CommandError> {
+    let db = state.lock().map_err(lock_error)?;
+    update_box_service(&db, &id, input)
+}
+
+#[tauri::command(rename = "delete_box")]
+pub fn delete_box(state: State<'_, Mutex<Database>>, id: String) -> Result<(), CommandError> {
+    let db = state.lock().map_err(lock_error)?;
+    delete_box_service(&db, &id)
 }

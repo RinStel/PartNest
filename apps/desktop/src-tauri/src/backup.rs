@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::Builder;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 pub const MAX_BACKUPS: usize = 10;
 pub const STARTUP_BACKUP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -233,6 +233,11 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
             "updated_at",
         ],
     )?;
+    require_index(
+        connection,
+        "welding_sessions",
+        "welding_sessions_one_active",
+    )?;
     if !progress_sql.contains("check(sidein('top','bottom'))")
         || !progress_sql.contains("check(required_quantity>=0)")
         || !progress_sql.contains("check(taken_quantity>=0andtaken_quantity<=required_quantity)")
@@ -254,6 +259,11 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
             "created_at",
             "component_key",
             "side",
+            "before_quantity",
+            "after_quantity",
+            "movement_sequence",
+            "bom_quantity",
+            "confirmation_designators",
         ],
     )?;
     if !movements_sql.contains("check(movement_typein('in','consume','adjust','reverse'))")
@@ -267,6 +277,7 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
         "inventory_movements_part_id",
         "inventory_movements_session_id",
         "inventory_movements_welding_scope",
+        "inventory_movements_sequence_order",
     ] {
         require_index(connection, "inventory_movements", index)?;
     }

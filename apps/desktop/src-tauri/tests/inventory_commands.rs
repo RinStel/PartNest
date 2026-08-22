@@ -1,6 +1,9 @@
-use partnest_desktop_lib::commands::boxes::{create_box_service, resize_box_service, BoxInput};
+use partnest_desktop_lib::commands::boxes::{
+    create_box_service, delete_box_service, resize_box_service, update_box_service, BoxInput,
+};
 use partnest_desktop_lib::commands::parts::{
-    adjust_stock_service, create_part_service, list_parts_service, update_part_service, PartInput,
+    adjust_stock_service, create_part_service, delete_part_service, list_parts_service,
+    update_part_service, PartInput,
 };
 use partnest_desktop_lib::commands::CommandError;
 use partnest_desktop_lib::db::{new_id, Database};
@@ -131,4 +134,81 @@ fn stock_adjustment_rejects_negative_inventory_and_writes_audit_row() {
             .unwrap(),
         1
     );
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT before_quantity, after_quantity FROM inventory_movements WHERE part_id = ?1 AND reason = 'restock'",
+                [&part.id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap(),
+        (1, 4)
+    );
+}
+
+#[test]
+fn create_part_audits_nonzero_initial_stock_atomically() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
+    let part = create_part_service(&db, part_input(&box_record.id, "A0", 7)).unwrap();
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT movement_type, quantity, before_quantity, after_quantity FROM inventory_movements WHERE part_id = ?1",
+                [&part.id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
+            )
+            .unwrap(),
+        ("in".to_owned(), 7, 0, 7)
+    );
+}
+
+#[test]
+fn part_and_box_deletion_rejects_audited_or_occupied_records() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
+    let part = create_part_service(&db, part_input(&box_record.id, "A0", 1)).unwrap();
+    assert!(matches!(
+        delete_part_service(&db, &part.id),
+        Err(CommandError::Constraint(_))
+    ));
+    assert!(matches!(
+        delete_box_service(&db, &box_record.id),
+        Err(CommandError::Constraint(_))
+    ));
+    let empty_box = create_box_service(&db, box_input(1, 1)).unwrap();
+    let renamed = update_box_service(
+        &db,
+        &empty_box.id,
+        BoxInput {
+            name: "Renamed".into(),
+            rows: 1,
+            cols: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(renamed.name, "Renamed");
+    delete_box_service(&db, &empty_box.id).unwrap();
+}
+
+#[test]
+fn deleting_legacy_positive_stock_is_rejected_without_an_audit_row() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(1, 2)).unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO parts (id, name, quantity, box_id, slot, version) VALUES (?1, 'legacy', 5, ?2, 'A0', 1)",
+            rusqlite::params![new_id(), box_record.id],
+        )
+        .unwrap();
+    let legacy_id: String = db
+        .connection()
+        .query_row("SELECT id FROM parts WHERE name = 'legacy'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(matches!(
+        delete_part_service(&db, &legacy_id),
+        Err(CommandError::Constraint(_))
+    ));
 }

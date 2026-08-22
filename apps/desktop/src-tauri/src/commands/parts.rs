@@ -1,6 +1,6 @@
 use super::{lock_error, normalize_slot, optional_text, validate_name, CommandError};
 use crate::db::{new_id, utc_now, Database};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::State;
@@ -33,6 +33,16 @@ pub struct PartView {
     pub slot: String,
     pub note: Option<String>,
     pub version: i64,
+}
+
+fn next_movement_sequence(transaction: &Transaction<'_>) -> Result<i64, CommandError> {
+    transaction
+        .query_row(
+            "SELECT COALESCE(MAX(movement_sequence), 0) + 1 FROM inventory_movements",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(CommandError::from)
 }
 
 fn validate_input(
@@ -120,10 +130,19 @@ pub fn list_parts_service(
 pub fn create_part_service(db: &Database, input: PartInput) -> Result<PartView, CommandError> {
     let (name, box_id, slot) = validate_input(db, &input, true)?;
     let id = new_id();
-    db.connection().execute(
+    let transaction = db.transaction()?;
+    transaction.execute(
         "INSERT INTO parts (id, name, category, package, manufacturer, mpn, lcsc_code, quantity, box_id, slot, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![id, name, optional_text(&input.category), optional_text(&input.package), optional_text(&input.manufacturer), optional_text(&input.mpn), optional_text(&input.lcsc_code), input.quantity, box_id, slot, optional_text(&input.note)],
     )?;
+    if input.quantity > 0 {
+        let sequence = next_movement_sequence(&transaction)?;
+        transaction.execute(
+            "INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason, before_quantity, after_quantity, movement_sequence) VALUES (?1, ?2, 'in', ?3, ?4, ?5, ?6, ?7)",
+            params![new_id(), id, input.quantity, "initial stock", 0_i64, input.quantity, sequence],
+        )?;
+    }
+    transaction.commit()?;
     read_part(db, &id)
 }
 
@@ -167,13 +186,50 @@ pub fn adjust_stock_service(
     if new_quantity < 0 {
         return Err(CommandError::Validation("库存数量不能为负数".into()));
     }
+    let sequence = next_movement_sequence(&transaction)?;
     transaction.execute(
         "UPDATE parts SET quantity = ?1, version = version + 1, updated_at = ?2 WHERE id = ?3",
         params![new_quantity, utc_now(), id],
     )?;
-    transaction.execute("INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason) VALUES (?1, ?2, 'adjust', ?3, ?4)", params![new_id(), id, delta, reason])?;
+    transaction.execute("INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason, before_quantity, after_quantity, movement_sequence) VALUES (?1, ?2, 'adjust', ?3, ?4, ?5, ?6, ?7)", params![new_id(), id, delta, reason, quantity, new_quantity, sequence])?;
     transaction.commit()?;
     read_part(db, id)
+}
+
+/// A part is an audited business record. Once it has movements or welding
+/// progress, deletion would orphan history, so the command rejects it.
+pub fn delete_part_service(db: &Database, id: &str) -> Result<(), CommandError> {
+    let quantity: Option<i64> = db
+        .connection()
+        .query_row("SELECT quantity FROM parts WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let Some(quantity) = quantity else {
+        return Err(CommandError::NotFound("器件不存在".into()));
+    };
+    let movement_count: i64 = db.connection().query_row(
+        "SELECT COUNT(*) FROM inventory_movements WHERE part_id = ?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    let progress_count: i64 = db.connection().query_row(
+        "SELECT COUNT(*) FROM welding_progress WHERE part_id = ?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    if quantity != 0 || movement_count > 0 || progress_count > 0 {
+        return Err(CommandError::Constraint(
+            "已有库存流水或焊接记录，不能删除器件".into(),
+        ));
+    }
+    let changed = db
+        .connection()
+        .execute("DELETE FROM parts WHERE id = ?1", [id])?;
+    if changed != 1 {
+        return Err(CommandError::NotFound("器件不存在".into()));
+    }
+    Ok(())
 }
 
 #[tauri::command(rename = "list_parts")]
@@ -214,4 +270,10 @@ pub fn adjust_stock(
 ) -> Result<PartView, CommandError> {
     let db = state.lock().map_err(lock_error)?;
     adjust_stock_service(&db, &id, delta, &reason)
+}
+
+#[tauri::command(rename = "delete_part")]
+pub fn delete_part(state: State<'_, Mutex<Database>>, id: String) -> Result<(), CommandError> {
+    let db = state.lock().map_err(lock_error)?;
+    delete_part_service(&db, &id)
 }

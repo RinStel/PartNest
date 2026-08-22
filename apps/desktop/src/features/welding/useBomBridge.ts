@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from "react";
+import { useLayoutEffect, type RefObject } from "react";
 import type { CachedBomSession, ResolvedBomSelection } from "../../app/tauri";
 
 type BridgeApi = Pick<import("../../app/tauri").DesktopApi, "resolveBomSelection">;
@@ -16,7 +16,7 @@ export function useBomBridge({
   onResolved: (selection: ResolvedBomSelection) => void;
   onError: (error: unknown) => void;
 }) {
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!session) return;
     let sequence = 0;
     let disposed = false;

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { cachedBomUrl, desktopApi, errorMessage, type BomSide, type CachedBomSession, type ConfirmTakeInput, type DesktopApi, type Part, type ResolvedBomSelection, type WeldingProgress } from "../../app/tauri";
+import { cachedBomUrl, desktopApi, errorMessage, normalizePart, type BomSide, type CachedBomSession, type ConfirmTakeInput, type DesktopApi, type Part, type ResolvedBomSelection, type WeldingProgress } from "../../app/tauri";
+import { matchBomGroup } from "../../../../../packages/domain/src/bom/matching";
+import type { InventoryPart } from "../../../../../packages/domain/src/bom/types";
 import { BomFrame } from "./BomFrame";
 import { TakePanel } from "./TakePanel";
 import { useBomBridge } from "./useBomBridge";
@@ -25,18 +27,46 @@ export function WeldingPage({ api = desktopApi }: { api?: WeldingApi }) {
     void Promise.all([api.restoreActiveInteractiveBom(), api.listParts()]).then(([restored, listed]) => {
       if (!active) return;
       setSession(restored);
-      setParts(listed);
+      setParts(listed.map((part) => normalizePart(part)));
       if (restored) void api.getWeldingProgress(restored.session_id).then((items) => active && setProgress(items)).catch(() => undefined);
     }).catch((cause) => active && setError(errorMessage(cause)));
     return () => { active = false; };
   }, [api]);
 
   const selectedGroup = useMemo(() => selection && session?.normalized.groups.find((group) => group.component_key === selection.component_key) || null, [selection, session]);
+  const authoritativeMatch = useMemo(() => {
+    if (!selectedGroup) return { kind: "none" as const };
+    const inventory: InventoryPart[] = parts.map((part) => ({
+      id: part.id,
+      name: part.name,
+      package: part.package ?? "",
+      mpn: part.mpn ?? "",
+      lcscCode: part.lcsc_code ?? "",
+      value: part.name,
+    }));
+    return matchBomGroup({
+      componentKey: selectedGroup.component_key,
+      name: selectedGroup.name,
+      value: selectedGroup.value,
+      package: selectedGroup.package,
+      manufacturer: selectedGroup.manufacturer,
+      mpn: selectedGroup.mpn,
+      lcscCode: selectedGroup.lcsc_code,
+      placements: [],
+      extraFields: selectedGroup.extra_fields,
+    }, inventory);
+  }, [parts, selectedGroup]);
   const selectedPart = useMemo(() => {
     if (!selectedGroup) return null;
     if (selectedPartId) return parts.find((part) => part.id === selectedPartId) ?? null;
-    return parts.find((part) => (selectedGroup.lcsc_code && part.lcsc_code === selectedGroup.lcsc_code) || (selectedGroup.mpn && part.mpn === selectedGroup.mpn) || part.name === selectedGroup.name) ?? null;
-  }, [parts, selectedGroup, selectedPartId]);
+    if (authoritativeMatch.kind === "exact-lcsc" || authoritativeMatch.kind === "exact-mpn") {
+      return parts.find((part) => part.id === authoritativeMatch.partId) ?? null;
+    }
+    return null;
+  }, [authoritativeMatch, parts, selectedGroup, selectedPartId]);
+  const selectableParts = useMemo(() => authoritativeMatch.kind === "candidate"
+    ? parts.filter((part) => authoritativeMatch.partIds.includes(part.id))
+    : parts, [authoritativeMatch, parts]);
   const selectedDesignators = selectedGroup && selection
     ? side === "all" || side === selection.side
       ? selection.designators
@@ -69,7 +99,10 @@ export function WeldingPage({ api = desktopApi }: { api?: WeldingApi }) {
     try {
       const result = await api.confirmTake(input);
       const [listed, updatedProgress] = await Promise.all([api.listParts(), api.getWeldingProgress(session.session_id)]);
-      setParts(listed.map((item) => item.id === result.part_id ? { ...item, version: Math.max(item.version, result.part_version) } : item));
+      setParts(listed.map((item) => {
+        const normalized = normalizePart(item);
+        return normalized.id === result.part_id ? { ...normalized, version: Math.max(normalized.version, result.part_version) } : normalized;
+      }));
       setProgress(updatedProgress);
       setNotice("已确认取用");
     } catch (cause) {
@@ -105,7 +138,7 @@ export function WeldingPage({ api = desktopApi }: { api?: WeldingApi }) {
             <div role="row"><div role="columnheader" data-testid="component-column" style={{ width: columns.widths.component }}>器件 {resizeButton("component", "器件")}</div><div role="columnheader" style={{ width: columns.widths.package }}>封装 {resizeButton("package", "封装")}</div><div role="columnheader" style={{ width: columns.widths.quantity }}>数量 {resizeButton("quantity", "数量")}</div><div role="columnheader" style={{ width: columns.widths.side }}>板面 {resizeButton("side", "板面")}</div></div>
             <div role="row"><div role="cell" data-testid="component-cell" style={{ width: columns.widths.component }}>{selectedGroup.name || selectedGroup.value}</div><div role="cell" style={{ width: columns.widths.package }}>{selectedGroup.package}</div><div role="cell" style={{ width: columns.widths.quantity }}>{selectedDesignators.length}</div><div role="cell" style={{ width: columns.widths.side }}>{side}</div></div>
           </div>
-          <TakePanel group={selectedGroup} side={side} designators={selectedDesignators} part={selectedPart} parts={parts} progress={progress} onPartChange={setSelectedPartId} onConfirm={confirm} error={error} busy={busy} />
+          <TakePanel group={selectedGroup} side={side} designators={selectedDesignators} part={selectedPart} parts={selectableParts} progress={progress} onPartChange={setSelectedPartId} onConfirm={confirm} error={error} busy={busy} />
           {notice && <p>{notice}</p>}
         </> : <p>请在 BOM 中选择器件</p>}
       </div>

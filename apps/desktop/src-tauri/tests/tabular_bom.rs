@@ -232,6 +232,30 @@ fn malformed_csv_is_rejected() {
 }
 
 #[test]
+fn inconsistent_row_width_is_rejected_instead_of_selecting_a_wrong_delimiter() {
+    let path = temp_csv("Quantity,Designator,Footprint,Value\n1,C1,0603,10k\n2,C2,0603\n");
+    assert!(matches!(
+        inspect_tabular_bom(&path, None),
+        Err(TabularError::MalformedCsv { .. })
+    ));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn mapped_empty_designators_do_not_satisfy_an_explicit_quantity() {
+    let path = temp_csv("Quantity,Designator,Footprint,Value\n2,,0603,10k\n");
+    assert!(matches!(
+        inspect_tabular_bom(&path, None),
+        Err(TabularError::QuantityDesignatorMismatch {
+            quantity: 2,
+            designators: 0,
+            ..
+        })
+    ));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn delimiter_detection_scores_more_than_twenty_rows_and_quoted_commas() {
     let mut csv = String::from("Quantity,Designator,Footprint,Value\n");
     for row in 0..25 {

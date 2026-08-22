@@ -32,8 +32,6 @@ describe("BomImportPage", () => {
     const pickFile = vi.fn().mockResolvedValue("board.txt");
     render(<BomImportPage api={api()} pickFile={pickFile} />);
 
-    const input = screen.getByLabelText("选择 BOM 文件");
-    expect(input).toHaveAttribute("accept", ".html,.csv,.xlsx");
     fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
     expect(pickFile).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("不支持的 BOM 格式"));
@@ -58,6 +56,15 @@ describe("BomImportPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
     expect(await screen.findByText("缺料分析")).toBeInTheDocument();
     expect(cacheInteractiveBom).toHaveBeenCalledWith("board.html", "board.html");
+  });
+
+  it("passes an edited BOM remark name when importing interactive HTML", async () => {
+    const cacheInteractiveBom = vi.fn().mockResolvedValue({ normalized: ready.bom });
+    render(<BomImportPage api={api({ cacheInteractiveBom })} pickFile={vi.fn().mockResolvedValue("board.html")} />);
+    fireEvent.change(screen.getByLabelText("BOM备注名"), { target: { value: "我的板子" } });
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    await screen.findByText("缺料分析");
+    expect(cacheInteractiveBom).toHaveBeenCalledWith("board.html", "我的板子");
   });
 
   it("analyzes exact, candidate, and unmatched groups with non-negative shortages", async () => {

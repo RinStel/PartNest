@@ -146,29 +146,55 @@ fn read_csv(path: &Path) -> Result<Table, TabularError> {
             .delimiter(delimiter)
             .from_reader(text.as_bytes());
         match reader.records().collect::<Result<Vec<_>, _>>() {
-            Ok(rows) => {
-                if let Some(table) = table_from_records(rows) {
+            Ok(rows) => match table_from_records(rows) {
+                Ok(Some(table)) => {
                     let recognized = table
                         .headers
                         .iter()
                         .filter(|header| canonical_header(header).is_some())
                         .count();
                     let width = table.headers.len();
-                    let stable = table.records.iter().take(20).all(|row| row.len() == width);
-                    candidates.push((stable, recognized, width, delimiter, table));
+                    candidates.push((recognized, width, delimiter, table));
                 }
+                Ok(None) => {}
+                Err((reason, recognized)) => {
+                    malformed.push((delimiter as char, reason, recognized));
+                }
+            },
+            Err(error) => {
+                let recognized = ReaderBuilder::new()
+                    .has_headers(false)
+                    .delimiter(delimiter)
+                    .from_reader(text.as_bytes())
+                    .records()
+                    .next()
+                    .and_then(Result::ok)
+                    .map(|header| {
+                        header
+                            .iter()
+                            .filter(|value| canonical_header(value).is_some())
+                            .count()
+                    })
+                    .unwrap_or(0);
+                malformed.push((delimiter as char, error.to_string(), recognized));
             }
-            Err(error) => malformed.push((delimiter as char, error.to_string())),
         }
     }
-    candidates
-        .sort_by_key(|candidate| (candidate.0, candidate.1, candidate.2, candidate.3 == b','));
-    if let Some((_, recognized, _, _, table)) = candidates.pop() {
-        if recognized > 0 || malformed.is_empty() {
-            return Ok(table);
+    candidates.sort_by_key(|candidate| (candidate.0, candidate.1, candidate.2 == b','));
+    if let Some((recognized, _, _delimiter, table)) = candidates.pop() {
+        if malformed
+            .iter()
+            .any(|(_, _, malformed_recognized)| *malformed_recognized > recognized)
+        {
+            let (delimiter, error, _) = malformed
+                .into_iter()
+                .max_by_key(|(_, _, recognized)| *recognized)
+                .expect("malformed candidate exists");
+            return Err(TabularError::MalformedCsv { delimiter, error });
         }
+        return Ok(table);
     }
-    if let Some((delimiter, error)) = malformed.into_iter().next() {
+    if let Some((delimiter, error, _)) = malformed.into_iter().next() {
         return Err(TabularError::MalformedCsv { delimiter, error });
     }
     Err(TabularError::InvalidRecord {
@@ -189,7 +215,7 @@ fn read_xlsx(path: &Path) -> Result<Table, TabularError> {
             .rows()
             .map(|row| row.iter().map(data_to_string).collect())
             .collect();
-        if let Some(table) = table_from_rows(rows) {
+        if let Ok(Some(table)) = table_from_rows(rows) {
             return Ok(table);
         }
     }
@@ -224,7 +250,7 @@ fn decode_text(bytes: &[u8]) -> Result<String, TabularError> {
     String::from_utf8(bytes.to_vec()).map_err(|_| TabularError::UnsupportedEncoding)
 }
 
-fn table_from_records(rows: Vec<StringRecord>) -> Option<Table> {
+fn table_from_records(rows: Vec<StringRecord>) -> Result<Option<Table>, (String, usize)> {
     table_from_rows(
         rows.into_iter()
             .map(|row| row.iter().map(str::to_owned).collect())
@@ -232,20 +258,41 @@ fn table_from_records(rows: Vec<StringRecord>) -> Option<Table> {
     )
 }
 
-fn table_from_rows(rows: Vec<Vec<String>>) -> Option<Table> {
+fn table_from_rows(rows: Vec<Vec<String>>) -> Result<Option<Table>, (String, usize)> {
     let mut iter = rows
         .into_iter()
         .filter(|row| row.iter().any(|value| !value.trim().is_empty()));
-    let headers = iter
-        .next()?
+    let Some(headers) = iter.next() else {
+        return Ok(None);
+    };
+    let headers = headers
         .into_iter()
         .map(|value| value.trim().to_owned())
         .collect::<Vec<_>>();
     if headers.is_empty() || headers.iter().all(String::is_empty) {
-        return None;
+        return Ok(None);
     }
-    let records = iter.collect();
-    Some(Table { headers, records })
+    let records: Vec<Vec<String>> = iter.collect();
+    if let Some((row_index, row)) = records
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.len() != headers.len())
+    {
+        let recognized = headers
+            .iter()
+            .filter(|header| canonical_header(header).is_some())
+            .count();
+        return Err((
+            format!(
+                "inconsistent row width at row {}: expected {}, got {}",
+                row_index + 2,
+                headers.len(),
+                row.len()
+            ),
+            recognized,
+        ));
+    }
+    Ok(Some(Table { headers, records }))
 }
 
 fn resolve_mapping(headers: &[String], supplied: Option<&FieldMapping>) -> (FieldMapping, bool) {
@@ -357,7 +404,7 @@ fn normalize_table(
                     row: offset + 2,
                     value: raw_quantity.clone(),
                 })?;
-            if !designator_list.is_empty() && quantity as usize != designator_list.len() {
+            if index.contains_key("designators") && quantity as usize != designator_list.len() {
                 return Err(TabularError::QuantityDesignatorMismatch {
                     row: offset + 2,
                     quantity,

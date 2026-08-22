@@ -366,3 +366,64 @@ fn foreign_key_actions_preserve_audit_rows_and_enforce_restricts() {
         .execute("DELETE FROM boxes WHERE id = 'box-1'", [])
         .unwrap();
 }
+
+#[test]
+fn migration_adds_audit_order_and_nullable_legacy_metadata() {
+    let db = test_database();
+    for column in [
+        "before_quantity",
+        "after_quantity",
+        "movement_sequence",
+        "bom_quantity",
+        "confirmation_designators",
+    ] {
+        assert_eq!(
+            db.connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('inventory_movements') WHERE name = ?1",
+                    [column],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "missing movement metadata column {column}"
+        );
+    }
+    db.connection()
+        .execute(
+            "INSERT INTO inventory_movements (id, movement_type, quantity, reason) VALUES ('legacy', 'adjust', 1, 'legacy')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT before_quantity, after_quantity, confirmation_designators FROM inventory_movements WHERE id = 'legacy'",
+                [],
+                |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<String>>(2)?)),
+            )
+            .unwrap(),
+        (None, None, None)
+    );
+}
+
+#[test]
+fn migration_rejects_unknown_future_and_missing_versions() {
+    let future_path = test_path("future-schema");
+    {
+        let connection = rusqlite::Connection::open(&future_path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (99, 'now');")
+            .unwrap();
+    }
+    assert!(Database::open(&future_path).is_err());
+
+    let gap_path = test_path("gap-schema");
+    {
+        let connection = rusqlite::Connection::open(&gap_path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (2, 'now');")
+            .unwrap();
+    }
+    assert!(Database::open(&gap_path).is_err());
+}

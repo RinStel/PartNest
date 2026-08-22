@@ -180,4 +180,22 @@ describe("WeldingPage", () => {
     expect(frame).toHaveAttribute("sandbox", "allow-scripts");
     expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
   });
+
+  it("does not silently use a same-named part when an authoritative LCSC is unmatched", async () => {
+    const api = makeApi({
+      restoreActiveInteractiveBom: vi.fn().mockResolvedValue({
+        ...session,
+        normalized: {
+          ...session.normalized,
+          groups: [{ ...session.normalized.groups[0], lcsc_code: "C-MISSING" }],
+        },
+      }),
+    });
+    render(<WeldingPage api={api} />);
+    await screen.findByTitle("交互式 BOM");
+    selectInBom(["R1", "R2"]);
+    expect(await screen.findByLabelText("选择器件")).toHaveValue("");
+    expect(screen.getByRole("button", { name: /确认取用/ })).toBeDisabled();
+    expect(api.confirmTake).not.toHaveBeenCalled();
+  });
 });

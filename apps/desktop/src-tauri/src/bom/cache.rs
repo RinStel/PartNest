@@ -252,7 +252,7 @@ impl<'db> InteractiveBomCache<'db> {
         let sha256 = hex::encode(Sha256::digest(&bytes));
         let cache_name = format!("{sha256}.html");
         let token = Uuid::new_v4().to_string();
-        let cache_path = self.cache_dir.join(&cache_name);
+        let cache_path = validate_cache_path(&self.cache_dir, &cache_name)?;
         let designators = bindings(&normalized)?;
         self.write_cache_atomically(&cache_path, &bytes, &token, &designators)?;
         let (bom_file_id, session_id) = {
@@ -266,7 +266,7 @@ impl<'db> InteractiveBomCache<'db> {
                 .optional()?
                 .unwrap_or_else(new_id);
             tx.execute(
-                "INSERT OR IGNORE INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(sha256) DO UPDATE SET original_name = excluded.original_name, display_name = excluded.display_name, cache_name = excluded.cache_name",
                 rusqlite::params![bom_file_id, original_name, display_name, sha256, cache_name],
             )?;
             let session_id = tx.query_row(
@@ -274,14 +274,22 @@ impl<'db> InteractiveBomCache<'db> {
                 [&bom_file_id],
                 |row| row.get::<_, String>(0),
             ).optional()?.unwrap_or_else(new_id);
-            if session_id.len() == 36
-                && !tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM welding_sessions WHERE id = ?1)",
-                    [&session_id],
-                    |row| row.get::<_, bool>(0),
-                )?
-            {
+            tx.execute(
+                "UPDATE welding_sessions SET status = 'cancelled', updated_at = ?1 WHERE status = 'active' AND id <> ?2",
+                rusqlite::params![crate::db::utc_now(), session_id],
+            )?;
+            let exists = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM welding_sessions WHERE id = ?1)",
+                [&session_id],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !exists {
                 tx.execute("INSERT INTO welding_sessions (id, bom_file_id, status) VALUES (?1, ?2, 'active')", rusqlite::params![session_id, bom_file_id])?;
+            } else {
+                tx.execute(
+                    "UPDATE welding_sessions SET status = 'active', updated_at = ?1 WHERE id = ?2",
+                    rusqlite::params![crate::db::utc_now(), session_id],
+                )?;
             }
             tx.commit()?;
             (bom_file_id, session_id)
@@ -393,7 +401,7 @@ impl<'db> InteractiveBomCache<'db> {
         else {
             return Ok(None);
         };
-        let cache_path = self.cache_dir.join(&cache_name);
+        let cache_path = validate_cache_path(&self.cache_dir, &cache_name)?;
         let cached = fs::read(&cache_path)?;
         let marker = b"\n<!-- partnest bridge-v1 -->";
         let marker_index = cached
@@ -416,6 +424,10 @@ impl<'db> InteractiveBomCache<'db> {
         let token = Uuid::new_v4().to_string();
         let designators = bindings(&normalized)?;
         self.write_cache_atomically(&cache_path, source, &token, &designators)?;
+        self.db.connection().execute(
+            "UPDATE welding_sessions SET updated_at = ?1 WHERE id = ?2 AND status = 'active'",
+            rusqlite::params![crate::db::utc_now(), session_id],
+        )?;
         *self
             .active
             .lock()
@@ -472,6 +484,37 @@ impl<'db> InteractiveBomCache<'db> {
         }
         Ok(())
     }
+}
+
+fn validate_cache_path(cache_dir: &Path, cache_name: &str) -> Result<PathBuf, CacheError> {
+    let valid_name = cache_name.len() == 69
+        && cache_name.ends_with(".html")
+        && cache_name[..64]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && !cache_name.contains('/')
+        && !cache_name.contains('\\');
+    if !valid_name {
+        return Err(CacheError::TamperedCache(
+            "cache name must be a lowercase sha256 .html filename".into(),
+        ));
+    }
+    fs::create_dir_all(cache_dir)?;
+    let root = fs::canonicalize(cache_dir)?;
+    let target = root.join(cache_name);
+    if let Ok(existing) = fs::canonicalize(&target) {
+        if !existing.starts_with(&root) {
+            return Err(CacheError::TamperedCache(
+                "cache path escapes cache directory".into(),
+            ));
+        }
+    }
+    if target.parent() != Some(root.as_path()) {
+        return Err(CacheError::TamperedCache(
+            "cache path escapes cache directory".into(),
+        ));
+    }
+    Ok(target)
 }
 
 struct TempFileGuard(PathBuf);
