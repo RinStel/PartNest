@@ -47,7 +47,7 @@ fn create_part_normalizes_slot_and_rejects_out_of_range_positions() {
 
     assert!(create_part_service(&db, part_input(&box_record.id, "C0", 1)).is_err());
     assert!(create_part_service(&db, part_input(&box_record.id, "A100", 1)).is_err());
-    for invalid in ["A01", "A+1", "A-0", "A１"] {
+    for invalid in ["A01", "A+1", "A-0", "A１", "Ａ1", "é1", "盒1"] {
         assert!(
             create_part_service(&db, part_input(&box_record.id, invalid, 1)).is_err(),
             "{invalid}"

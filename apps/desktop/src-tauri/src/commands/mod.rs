@@ -61,7 +61,7 @@ pub(crate) fn validate_name(name: &str, kind: &str) -> Result<String, CommandErr
 pub(crate) fn normalize_slot(slot: &str, rows: i64, cols: i64) -> Result<String, CommandError> {
     let value = slot.trim().to_ascii_uppercase();
     let bytes = value.as_bytes();
-    if bytes.len() < 2 {
+    if !value.is_ascii() || bytes.len() < 2 {
         return Err(CommandError::Validation(
             "盒位必须由字母行和数字列组成".into(),
         ));
