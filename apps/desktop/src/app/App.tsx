@@ -15,6 +15,7 @@ export function App() {
         <Route element={<AppShell />}>
           <Route index element={<Navigate to="/inventory" replace />} />
           {primaryRoutes.map((route) => <Route key={route.id} path={route.path} element={route.id === "inventory" ? <InventoryPage /> : route.id === "boxes" ? <BoxesPage /> : route.id === "bom" ? <BomImportPage /> : route.id === "welding" ? <WeldingPage /> : route.id === "movements" ? <MovementsPage /> : route.id === "settings" ? <SettingsPage /> : <RoutePlaceholder />} />)}
+          <Route path="*" element={<RoutePlaceholder />} />
         </Route>
       </Routes>
     </BrowserRouter>

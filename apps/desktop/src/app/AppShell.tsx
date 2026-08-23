@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { matchPath, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Icon } from "../components/ui/Icon";
 import { PageToolbar } from "../components/ui/PageToolbar";
@@ -11,7 +11,7 @@ interface PageActionEntry {
 }
 
 interface PageActionsContextValue {
-  entry: PageActionEntry | null;
+  entries: PageActionEntry[];
   register: (id: string, routeKey: string, actions: ReactNode) => void;
   unregister: (id: string, routeKey: string) => void;
 }
@@ -19,25 +19,42 @@ interface PageActionsContextValue {
 const PageActionsContext = createContext<PageActionsContextValue | null>(null);
 
 function PageActionsProvider({ routeKey, children }: { routeKey: string; children: ReactNode }): JSX.Element {
-  const [entry, setEntry] = useState<PageActionEntry | null>(null);
+  const [entries, setEntries] = useState<PageActionEntry[]>([]);
   useEffect(() => {
-    setEntry((current) => current && current.routeKey !== routeKey ? null : current);
+    setEntries((current) => {
+      const next = current.filter((entry) => entry.routeKey === routeKey);
+      return next.length === current.length ? current : next;
+    });
   }, [routeKey]);
   const register = useCallback((id: string, nextRouteKey: string, actions: ReactNode) => {
-    setEntry((current) => (
-      current?.id === id && current.routeKey === nextRouteKey && Object.is(current.actions, actions)
-        ? current
-        : { id, routeKey: nextRouteKey, actions }
-    ));
+    setEntries((current) => {
+      const index = current.findIndex((entry) => entry.id === id);
+      if (index >= 0) {
+        const previous = current[index];
+        if (previous.routeKey === nextRouteKey && Object.is(previous.actions, actions)) return current;
+        const next = current.slice();
+        next[index] = { id, routeKey: nextRouteKey, actions };
+        return next;
+      }
+      return [...current, { id, routeKey: nextRouteKey, actions }];
+    });
   }, []);
   const unregister = useCallback((id: string, nextRouteKey: string) => {
-    setEntry((current) => current?.id === id && current.routeKey === nextRouteKey ? null : current);
+    setEntries((current) => {
+      const next = current.filter((entry) => entry.id !== id || entry.routeKey !== nextRouteKey);
+      return next.length === current.length ? current : next;
+    });
   }, []);
+  const value = useMemo(() => ({ entries, register, unregister }), [entries, register, unregister]);
 
-  return <PageActionsContext.Provider value={{ entry, register, unregister }}>{children}</PageActionsContext.Provider>;
+  return <PageActionsContext.Provider value={value}>{children}</PageActionsContext.Provider>;
 }
 
-/** Register actions in the current page toolbar for this route instance. */
+/**
+ * Register actions in the current page toolbar for this route instance.
+ * Callers must pass a useMemo-stable ReactNode; include every value used by
+ * labels, disabled states, and callbacks in that memo's dependency list.
+ */
 export function usePageActions(actions: ReactNode): void {
   const context = useContext(PageActionsContext);
   if (!context) throw new Error("usePageActions must be used inside AppShell");
@@ -45,13 +62,11 @@ export function usePageActions(actions: ReactNode): void {
   const location = useLocation();
   const id = useId();
   const routeKey = `${location.pathname}${location.search}`;
-  const actionsRef = useRef(actions);
-  actionsRef.current = actions;
 
   useEffect(() => {
-    context.register(id, routeKey, actionsRef.current);
+    context.register(id, routeKey, actions);
     return () => context.unregister(id, routeKey);
-  }, [context.register, context.unregister, id, routeKey]);
+  }, [actions, context.register, context.unregister, id, routeKey]);
 }
 
 function AppShellContent(): JSX.Element {
@@ -60,7 +75,9 @@ function AppShellContent(): JSX.Element {
   const context = useContext(PageActionsContext);
   const [navigationExpanded, setNavigationExpanded] = useState(true);
   const route = primaryRoutes.find((candidate) => matchPath({ path: candidate.path, end: true }, location.pathname));
-  const actions = context?.entry?.routeKey === routeKey ? context.entry.actions : undefined;
+  const actions = context
+    ? context.entries.filter((entry) => entry.routeKey === routeKey).map((entry) => <span key={entry.id}>{entry.actions}</span>)
+    : undefined;
 
   return (
     <div

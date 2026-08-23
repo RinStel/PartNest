@@ -23,4 +23,10 @@ describe("App shell", () => {
     fireEvent.click(screen.getAllByRole("link", { name: "焊接工作台" })[0]);
     expect(screen.getByRole("heading", { name: "焊接工作台" })).toBeInTheDocument();
   });
+
+  it("keeps the shell visible with a fallback title for unknown routes", () => {
+    window.history.pushState({}, "", "/unknown-route");
+    render(<App />);
+    expect(screen.getByRole("toolbar", { name: "PartNest工具栏" })).toBeInTheDocument();
+  });
 });
