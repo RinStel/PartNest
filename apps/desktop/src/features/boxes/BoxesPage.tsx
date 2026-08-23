@@ -1,93 +1,68 @@
-import { useEffect, useState } from "react";
-import { Box, desktopApi, DesktopApi, errorMessage } from "../../app/tauri";
+import { useEffect, useMemo, useState } from "react";
+import { Box, DesktopApi, desktopApi, errorMessage, normalizePart, Part } from "../../app/tauri";
+import { usePageActions } from "../../app/AppShell";
+import { BoxDialog, type BoxDraft } from "./BoxDialog";
 
-type BoxesApi = Pick<DesktopApi, "listBoxes" | "createBox" | "resizeBox"> &
-  Partial<Pick<DesktopApi, "updateBox" | "deleteBox">>;
+type BoxesApi = Pick<DesktopApi, "listBoxes" | "createBox" | "resizeBox"> & Partial<Pick<DesktopApi, "updateBox" | "deleteBox" | "listParts">>;
+const emptyDraft: BoxDraft = { name: "", rows: 4, cols: 4 };
+const slotName = (index: number, cols: number) => `${String.fromCharCode(65 + Math.floor(index / cols))}${index % cols}`;
 
-export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }) {
+export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }): JSX.Element {
   const [boxes, setBoxes] = useState<Box[]>([]);
-  const [name, setName] = useState("");
-  const [rows, setRows] = useState(4);
-  const [cols, setCols] = useState(4);
-  const [drafts, setDrafts] = useState<Record<string, { name: string; rows: number; cols: number }>>({});
+  const [parts, setParts] = useState<Part[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<Box | null>(null);
+  const [draft, setDraft] = useState<BoxDraft>(emptyDraft);
   const [error, setError] = useState("");
-
   const load = async () => {
     try {
-      const result = await api.listBoxes();
-      setBoxes(result);
-      setDrafts(Object.fromEntries(result.map((box) => [box.id, { name: box.name, rows: box.rows, cols: box.cols }])));
+      const [boxResult, partResult] = await Promise.all([api.listBoxes(), api.listParts ? api.listParts() : Promise.resolve([])]);
+      setBoxes(boxResult); setParts(partResult.map(normalizePart));
+      setSelectedId((current) => current || boxResult[0]?.id || "");
     } catch (cause) { setError(errorMessage(cause)); }
   };
   useEffect(() => { void load(); }, []);
-
+  const selected = boxes.find((box) => box.id === selectedId) ?? null;
+  const partBySlot = useMemo(() => new Map(parts.filter((part) => part.box_id === selected?.id).map((part) => [part.slot, part])), [parts, selected?.id]);
+  const openCreate = () => { setEditing(null); setDraft({ ...emptyDraft }); setError(""); setDialogOpen(true); };
+  const openEdit = () => { if (!selected) return; setEditing(selected); setDraft({ name: selected.name, rows: selected.rows, cols: selected.cols }); setError(""); setDialogOpen(true); };
+  const closeDialog = () => { setDialogOpen(false); setEditing(null); setDraft({ ...emptyDraft }); };
   async function saveBox() {
     setError("");
-    if (cols > 100) {
-      setError("列数不能超过 100");
-      return;
-    }
+    if (draft.cols > 100) { setError("列数不能超过 100"); return; }
     try {
-      const created = await api.createBox({ name, rows, cols });
-      setBoxes((current) => [...current, created]);
-      setDrafts((current) => ({ ...current, [created.id]: { name: created.name, rows: created.rows, cols: created.cols } }));
-      setName("");
+      const saved = editing
+        ? (api.updateBox ? await api.updateBox(editing.id, draft) : await api.resizeBox(editing.id, draft.rows, draft.cols))
+        : await api.createBox(draft);
+      setBoxes((current) => editing ? current.map((box) => box.id === saved.id ? saved : box) : [...current, saved]);
+      setSelectedId(saved.id); closeDialog();
     } catch (cause) { setError(errorMessage(cause)); }
   }
-
-  async function resize(box: Box) {
+  async function removeSelected() {
+    if (!selected || !api.deleteBox || !window.confirm(`删除收纳盒“${selected.name}”？`)) return;
     setError("");
-    const draft = drafts[box.id] ?? { name: box.name, rows: box.rows, cols: box.cols };
-    if (draft.cols > 100) {
-      setError("列数不能超过 100");
-      return;
-    }
-    try {
-      const updated = api.updateBox
-        ? await api.updateBox(box.id, { name: draft.name, rows: draft.rows, cols: draft.cols })
-        : await api.resizeBox(box.id, draft.rows, draft.cols);
-      setBoxes((current) => current.map((item) => item.id === updated.id ? updated : item));
-    } catch (cause) { setError(errorMessage(cause)); }
+    try { await api.deleteBox(selected.id); const next = boxes.filter((box) => box.id !== selected.id); setBoxes(next); setSelectedId(next[0]?.id ?? ""); }
+    catch (cause) { setError(errorMessage(cause)); }
   }
-
-  async function remove(box: Box) {
-    if (!api.deleteBox) return;
-    setError("");
-    try {
-      await api.deleteBox(box.id);
-      setBoxes((current) => current.filter((item) => item.id !== box.id));
-    } catch (cause) { setError(errorMessage(cause)); }
-  }
-
-  return <section aria-label="收纳盒">
-    <div className="form-row">
-      <label>名称 <input value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <label>行 <input type="number" min="1" value={rows} onChange={(event) => setRows(Number(event.target.value))} /></label>
-      <label>列 <input type="number" min="1" max="100" value={cols} onChange={(event) => setCols(Number(event.target.value))} /></label>
-      <button type="button" onClick={() => void saveBox()}>新建收纳盒</button>
-    </div>
-    {error && <p role="alert">{error}</p>}
-    <div className="box-list">
-      {boxes.map((box) => {
-        const draft = drafts[box.id] ?? { name: box.name, rows: box.rows, cols: box.cols };
-        const occupied = new Set(box.occupied_slots);
-        return <article key={box.id} aria-label={box.name}>
-          <h3>{box.name}</h3>
-          <div className="form-row">
-            <label>名称 <input value={draft.name} onChange={(event) => setDrafts((current) => ({ ...current, [box.id]: { ...draft, name: event.target.value } }))} /></label>
-            <label>行 <input type="number" min="1" value={draft.rows} onChange={(event) => setDrafts((current) => ({ ...current, [box.id]: { ...draft, rows: Number(event.target.value) } }))} /></label>
-            <label>列 <input type="number" min="1" max="100" value={draft.cols} onChange={(event) => setDrafts((current) => ({ ...current, [box.id]: { ...draft, cols: Number(event.target.value) } }))} /></label>
-            <button type="button" onClick={() => void resize(box)}>保存</button>
-            {api.deleteBox && <button type="button" onClick={() => void remove(box)}>删除</button>}
+  const toolbarActions = useMemo(() => <button className="pn-button pn-button--primary" type="button" onClick={openCreate}>新增收纳盒</button>, []);
+  const inShell = usePageActions(toolbarActions);
+  return <section className="inventory-page" aria-label="收纳盒">
+    {!inShell && <div className="inventory-local-toolbar">{toolbarActions}</div>}
+    {error && !dialogOpen && <p className="pn-inline-error" role="alert">{error}</p>}
+    <div className="boxes-page">
+      <aside className="boxes-list" aria-label="收纳盒列表">
+        {boxes.length === 0 ? <p className="boxes-empty">暂无收纳盒</p> : boxes.map((box) => <button key={box.id} className="boxes-list__item" type="button" aria-current={box.id === selectedId ? "true" : undefined} onClick={() => setSelectedId(box.id)}><span>{box.name}</span><span className="boxes-list__count">{box.rows}×{box.cols}</span></button>)}
+      </aside>
+      <div className="box-workspace" aria-label={selected ? `${selected.name}槽位` : "槽位"}>
+        {selected ? <>
+          <div className="box-workspace__header"><h2 className="box-workspace__title">{selected.name}</h2><div className="inventory-actions"><button className="pn-button pn-button--secondary" type="button" onClick={openEdit}>编辑</button>{api.deleteBox && <button className="pn-button pn-button--ghost" type="button" onClick={() => void removeSelected()}>删除</button>}</div></div>
+          <div className="box-grid" style={{ "--box-cols": selected.cols } as React.CSSProperties} aria-label={`${selected.name}盒位网格`}>
+            {Array.from({ length: selected.rows * selected.cols }, (_, index) => { const slot = slotName(index, selected.cols); const part = partBySlot.get(slot); return <div key={slot} className={`box-slot${part ? " box-slot--occupied" : ""}`} aria-label={`${slot}${part ? ` 已占用 ${part.name} 数量 ${part.quantity}` : " 空闲"}`}><span>{slot}</span>{part && <><span className="box-slot__part">{part.name}</span><span className="box-slot__quantity">×{part.quantity}</span></>}</div>; })}
           </div>
-          <div className="box-grid" style={{ gridTemplateColumns: `repeat(${box.cols}, minmax(2rem, 1fr))` }} aria-label={`${box.name}盒位网格`}>
-            {Array.from({ length: box.rows * box.cols }, (_, index) => {
-              const slot = `${String.fromCharCode(65 + Math.floor(index / box.cols))}${index % box.cols}`;
-              return <span key={slot} className={occupied.has(slot) ? "slot occupied" : "slot"} aria-label={`${slot}${occupied.has(slot) ? " 已占用" : " 空闲"}`}>{slot}</span>;
-            })}
-          </div>
-        </article>;
-      })}
+        </> : <p className="boxes-empty">选择收纳盒</p>}
+      </div>
     </div>
+    <BoxDialog open={dialogOpen} editing={Boolean(editing)} dirty={Boolean(editing ? draft.name !== editing.name || draft.rows !== editing.rows || draft.cols !== editing.cols : draft.name !== "" || draft.rows !== 4 || draft.cols !== 4)} draft={draft} error={error} onChange={(field, value) => setDraft((current) => ({ ...current, [field]: value }))} onSave={() => void saveBox()} onRequestClose={closeDialog} />
   </section>;
 }

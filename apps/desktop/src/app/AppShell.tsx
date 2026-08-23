@@ -55,18 +55,20 @@ function PageActionsProvider({ routeKey, children }: { routeKey: string; childre
  * Callers must pass a useMemo-stable ReactNode; include every value used by
  * labels, disabled states, and callbacks in that memo's dependency list.
  */
-export function usePageActions(actions: ReactNode): void {
+export function usePageActions(actions: ReactNode): boolean {
   const context = useContext(PageActionsContext);
-  if (!context) throw new Error("usePageActions must be used inside AppShell");
-
   const location = useLocation();
   const id = useId();
   const routeKey = `${location.pathname}${location.search}`;
+  const register = context?.register;
+  const unregister = context?.unregister;
 
   useEffect(() => {
-    context.register(id, routeKey, actions);
-    return () => context.unregister(id, routeKey);
-  }, [actions, context.register, context.unregister, id, routeKey]);
+    if (!register || !unregister) return undefined;
+    register(id, routeKey, actions);
+    return () => unregister(id, routeKey);
+  }, [actions, register, unregister, id, routeKey]);
+  return Boolean(context);
 }
 
 function AppShellContent(): JSX.Element {
