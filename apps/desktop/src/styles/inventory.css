@@ -28,5 +28,6 @@
 .box-slot { min-height: 3.25rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .125rem; border: 1px solid var(--border); border-radius: 3px; color: var(--text-muted); background: var(--bg-app); font-size: 11px; }
 .box-slot--occupied { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: var(--text); background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel)); }
 .box-slot__part { max-width: 100%; overflow: hidden; padding: 0 .25rem; text-overflow: ellipsis; white-space: nowrap; }
+.box-slot__status { font-size: 11px; }
 .box-slot__quantity { color: var(--accent); font-size: 12px; font-weight: 600; }
 .boxes-empty { color: var(--text-muted); }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DesktopApi, desktopApi, errorMessage, normalizePart, Part, PartInput } from "../../app/tauri";
 import { DataTable, type DataColumn } from "../../components/ui/DataTable";
 import { usePageActions } from "../../app/AppShell";
@@ -14,12 +14,17 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
   const [form, setForm] = useState<PartInput>(blankPart);
   const [editing, setEditing] = useState<Part | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerCloseRef = useRef<(() => Promise<boolean>) | null>(null);
   const [adjustment, setAdjustment] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const load = async () => { try { setParts((await api.listParts(search)).map(normalizePart)); } catch (cause) { setError(errorMessage(cause)); } };
   useEffect(() => { void load(); }, [search]);
   const setField = (field: keyof PartInput, value: string | number) => setForm((current) => ({ ...current, [field]: value }));
-  const openCreate = () => { setEditing(null); setForm({ ...blankPart }); setError(""); setDrawerOpen(true); };
+  const beginCreate = () => { setEditing(null); setForm({ ...blankPart }); setError(""); setDrawerOpen(true); };
+  const openCreate = () => {
+    if (drawerOpen) { const requestClose = drawerCloseRef.current; if (requestClose) void requestClose().then((closed) => { if (closed) beginCreate(); }); return; }
+    beginCreate();
+  };
   const openEdit = (part: Part) => { setEditing(part); setForm(toInput(part)); setError(""); setDrawerOpen(true); };
   const closeDrawer = () => { setDrawerOpen(false); setEditing(null); setForm({ ...blankPart }); };
   async function save() {
@@ -61,12 +66,12 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
       {api.deletePart && <button className="pn-button pn-button--ghost" type="button" onClick={() => void remove(part)}>删除</button>}
     </div> },
   ], [adjustment, api.deletePart]);
-  const toolbarActions = useMemo(() => <><input className="pn-control" aria-label="搜索库存" placeholder="名称、MPN 或 LCSC" value={search} onChange={(event) => setSearch(event.target.value)} /><button className="pn-button pn-button--primary" type="button" onClick={openCreate}>新增器件</button></>, [search]);
+  const toolbarActions = useMemo(() => <><input className="pn-control" aria-label="搜索库存" placeholder="名称、MPN 或 LCSC" value={search} onChange={(event) => setSearch(event.target.value)} /><button className="pn-button pn-button--primary" type="button" onClick={openCreate}>新增器件</button></>, [search, drawerOpen]);
   const inShell = usePageActions(toolbarActions);
   return <section className="inventory-page" aria-label="库存管理">
     {!inShell && <div className="inventory-local-toolbar">{toolbarActions}</div>}
     {error && !drawerOpen && <p className="pn-inline-error" role="alert">{error}</p>}
     <DataTable label="器件列表" rows={parts} columns={columns} rowKey={(part) => part.id} emptyText="暂无器件" />
-    <PartDrawer open={drawerOpen} editing={editing} form={form} error={error} onChange={setField} onSave={() => void save()} onRequestClose={closeDrawer} />
+    <PartDrawer open={drawerOpen} editing={editing} form={form} error={error} onChange={setField} onSave={() => void save()} onRequestClose={closeDrawer} onRequestCloseReady={(request) => { drawerCloseRef.current = request; }} />
   </section>;
 }

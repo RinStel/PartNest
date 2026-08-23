@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, DesktopApi, desktopApi, errorMessage, normalizePart, Part } from "../../app/tauri";
 import { usePageActions } from "../../app/AppShell";
 import { BoxDialog, type BoxDraft } from "./BoxDialog";
@@ -12,6 +12,7 @@ export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }): JSX.Element
   const [parts, setParts] = useState<Part[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const dialogCloseRef = useRef<(() => Promise<boolean>) | null>(null);
   const [editing, setEditing] = useState<Box | null>(null);
   const [draft, setDraft] = useState<BoxDraft>(emptyDraft);
   const [error, setError] = useState("");
@@ -25,7 +26,11 @@ export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }): JSX.Element
   useEffect(() => { void load(); }, []);
   const selected = boxes.find((box) => box.id === selectedId) ?? null;
   const partBySlot = useMemo(() => new Map(parts.filter((part) => part.box_id === selected?.id).map((part) => [part.slot, part])), [parts, selected?.id]);
-  const openCreate = () => { setEditing(null); setDraft({ ...emptyDraft }); setError(""); setDialogOpen(true); };
+  const beginCreate = () => { setEditing(null); setDraft({ ...emptyDraft }); setError(""); setDialogOpen(true); };
+  const openCreate = () => {
+    if (dialogOpen) { const requestClose = dialogCloseRef.current; if (requestClose) void requestClose().then((closed) => { if (closed) beginCreate(); }); return; }
+    beginCreate();
+  };
   const openEdit = () => { if (!selected) return; setEditing(selected); setDraft({ name: selected.name, rows: selected.rows, cols: selected.cols }); setError(""); setDialogOpen(true); };
   const closeDialog = () => { setDialogOpen(false); setEditing(null); setDraft({ ...emptyDraft }); };
   async function saveBox() {
@@ -45,7 +50,7 @@ export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }): JSX.Element
     try { await api.deleteBox(selected.id); const next = boxes.filter((box) => box.id !== selected.id); setBoxes(next); setSelectedId(next[0]?.id ?? ""); }
     catch (cause) { setError(errorMessage(cause)); }
   }
-  const toolbarActions = useMemo(() => <button className="pn-button pn-button--primary" type="button" onClick={openCreate}>新增收纳盒</button>, []);
+  const toolbarActions = useMemo(() => <button className="pn-button pn-button--primary" type="button" onClick={openCreate}>新增收纳盒</button>, [dialogOpen]);
   const inShell = usePageActions(toolbarActions);
   return <section className="inventory-page" aria-label="收纳盒">
     {!inShell && <div className="inventory-local-toolbar">{toolbarActions}</div>}
@@ -58,11 +63,11 @@ export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }): JSX.Element
         {selected ? <>
           <div className="box-workspace__header"><h2 className="box-workspace__title">{selected.name}</h2><div className="inventory-actions"><button className="pn-button pn-button--secondary" type="button" onClick={openEdit}>编辑</button>{api.deleteBox && <button className="pn-button pn-button--ghost" type="button" onClick={() => void removeSelected()}>删除</button>}</div></div>
           <div className="box-grid" style={{ "--box-cols": selected.cols } as React.CSSProperties} aria-label={`${selected.name}盒位网格`}>
-            {Array.from({ length: selected.rows * selected.cols }, (_, index) => { const slot = slotName(index, selected.cols); const part = partBySlot.get(slot); return <div key={slot} className={`box-slot${part ? " box-slot--occupied" : ""}`} aria-label={`${slot}${part ? ` 已占用 ${part.name} 数量 ${part.quantity}` : " 空闲"}`}><span>{slot}</span>{part && <><span className="box-slot__part">{part.name}</span><span className="box-slot__quantity">×{part.quantity}</span></>}</div>; })}
+            {Array.from({ length: selected.rows * selected.cols }, (_, index) => { const slot = slotName(index, selected.cols); const part = partBySlot.get(slot); return <div key={slot} className={`box-slot${part ? " box-slot--occupied" : ""}`} aria-label={`${slot}${part ? ` 已占用 ${part.name} 数量 ${part.quantity}` : " 空闲"}`}><span>{slot}</span><span className="box-slot__status">{part ? "已占用" : "空闲"}</span>{part && <><span className="box-slot__part">{part.name}</span><span className="box-slot__quantity">×{part.quantity}</span></>}</div>; })}
           </div>
         </> : <p className="boxes-empty">选择收纳盒</p>}
       </div>
     </div>
-    <BoxDialog open={dialogOpen} editing={Boolean(editing)} dirty={Boolean(editing ? draft.name !== editing.name || draft.rows !== editing.rows || draft.cols !== editing.cols : draft.name !== "" || draft.rows !== 4 || draft.cols !== 4)} draft={draft} error={error} onChange={(field, value) => setDraft((current) => ({ ...current, [field]: value }))} onSave={() => void saveBox()} onRequestClose={closeDialog} />
+    <BoxDialog open={dialogOpen} editing={Boolean(editing)} dirty={Boolean(editing ? draft.name !== editing.name || draft.rows !== editing.rows || draft.cols !== editing.cols : draft.name !== "" || draft.rows !== 4 || draft.cols !== 4)} draft={draft} error={error} onChange={(field, value) => setDraft((current) => ({ ...current, [field]: value }))} onSave={() => void saveBox()} onRequestClose={closeDialog} onRequestCloseReady={(request) => { dialogCloseRef.current = request; }} />
   </section>;
 }

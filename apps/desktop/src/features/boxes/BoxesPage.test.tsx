@@ -15,6 +15,8 @@ describe("BoxesPage", () => {
     expect(screen.getByRole("complementary", { name: "收纳盒列表" })).toBeInTheDocument();
     expect(screen.getByLabelText("A0 已占用 10k 数量 8")).toBeInTheDocument();
     expect(screen.getByLabelText("A1 空闲")).toBeInTheDocument();
+    expect(screen.getByLabelText("A0 已占用 10k 数量 8")).toHaveTextContent("已占用");
+    expect(screen.getByLabelText("A1 空闲")).toHaveTextContent("空闲");
   });
 
   it("opens a dialog for create and retains backend resize occupancy errors", async () => {
@@ -27,6 +29,21 @@ describe("BoxesPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     expect(await screen.findByText("目标规格包含不了已占用盒位 A0")).toBeVisible();
     expect(api.resizeBox).toHaveBeenCalledWith("box-1", 2, 3);
+  });
+
+  it("routes dialog cancel through dirty confirmation", async () => {
+    const api = { listBoxes: vi.fn().mockResolvedValue([box]), listParts: vi.fn().mockResolvedValue([]), createBox: vi.fn(), resizeBox: vi.fn() };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<MemoryRouter><BoxesPage api={api} /></MemoryRouter>);
+    await screen.findAllByText("抽屉盒");
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "修改中" } });
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(screen.getByRole("dialog", { name: "编辑收纳盒" })).toBeVisible();
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑收纳盒" })).not.toBeInTheDocument());
   });
 
   it("validates maximum columns before calling backend", async () => {

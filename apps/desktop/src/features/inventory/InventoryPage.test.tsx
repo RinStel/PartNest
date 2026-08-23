@@ -15,6 +15,23 @@ describe("InventoryPage", () => {
     for (const label of ["名称", "分类", "封装", "制造商", "MPN", "LCSC", "收纳盒 ID", "盒位", "数量", "备注"]) expect(screen.getByLabelText(label)).toBeVisible();
   });
 
+  it("routes cancel and repeated new through dirty confirmation", async () => {
+    const api = { listParts: vi.fn().mockResolvedValue([]), createPart: vi.fn(), updatePart: vi.fn(), adjustStock: vi.fn() };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", { name: "新增器件" }));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "pending" } });
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("dialog", { name: "新增器件" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "新增器件" }));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText("名称")).toHaveValue("pending");
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "新增器件" })).not.toBeInTheDocument());
+  });
+
   it("keeps fixed metadata columns and calls audited adjustment API", async () => {
     const api = { listParts: vi.fn().mockResolvedValue([part]), createPart: vi.fn(), updatePart: vi.fn(), adjustStock: vi.fn().mockResolvedValue({ ...part, quantity: 5, version: 2 }) };
     render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);

@@ -1,4 +1,4 @@
-import { useCallback, useId, useLayoutEffect, useRef } from "react";
+import { createContext, useCallback, useContext, useId, useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
 
 export type OverlayProps = {
@@ -28,6 +28,11 @@ type OverlayEntry = {
 // Overlay lifetime is deliberately scoped to this renderer process. It is not persisted.
 const overlayStack: OverlayEntry[] = [];
 let nextOverlayOrder = 0;
+const OverlayRequestCloseContext = createContext<(() => Promise<boolean>) | null>(null);
+
+export function useOverlayRequestClose(): (() => Promise<boolean>) | null {
+  return useContext(OverlayRequestCloseContext);
+}
 
 function registerOverlay(entry: OverlayEntry) {
   unregisterOverlay(entry.id);
@@ -133,13 +138,13 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
     };
   }, [id]);
 
-  const requestClose = useCallback(() => {
-    if (!openRef.current || !isTopmost(id) || pendingConfirmationRef.current) return;
+  const requestClose = useCallback(async () => {
+    if (!openRef.current || !isTopmost(id) || pendingConfirmationRef.current) return false;
     if (!dirty) {
       onRequestClose();
-      return;
+      return true;
     }
-    if (!confirmDiscard) return;
+    if (!confirmDiscard) return false;
 
     pendingConfirmationRef.current = true;
     const attempt = ++closeAttemptRef.current;
@@ -148,15 +153,19 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
       result = confirmDiscard();
     } catch {
       pendingConfirmationRef.current = false;
-      return;
+      return false;
     }
 
     const finish = (confirmed: boolean) => {
       pendingConfirmationRef.current = false;
-      if (confirmed && mountedRef.current && openRef.current && isTopmost(id) && attempt === closeAttemptRef.current) onRequestClose();
+      if (confirmed && mountedRef.current && openRef.current && isTopmost(id) && attempt === closeAttemptRef.current) {
+        onRequestClose();
+        return true;
+      }
+      return false;
     };
-    if (typeof result === "boolean") finish(result);
-    else void result.then(finish, () => finish(false));
+    if (typeof result === "boolean") return finish(result);
+    return result.then(finish, () => finish(false));
   }, [confirmDiscard, dirty, id, onRequestClose]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -204,7 +213,7 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
           <h2 id={titleId} className="pn-overlay__title">{title}</h2>
           <button type="button" className="pn-button pn-button--icon pn-button--ghost" aria-label="关闭" onClick={requestClose}>×</button>
         </header>
-        <div className="pn-overlay__body">{children}</div>
+        <div className="pn-overlay__body"><OverlayRequestCloseContext.Provider value={requestClose}>{children}</OverlayRequestCloseContext.Provider></div>
       </div>
     </div>
   );
