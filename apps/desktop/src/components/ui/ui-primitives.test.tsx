@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import viteConfigSource from "../../../vite.config.ts?raw";
+import viteConfig from "../../../vite.config";
 import tauriConfigSource from "../../../src-tauri/tauri.conf.json?raw";
 import { Dialog, Drawer } from "./Overlay";
 import { StatusBadge } from "./StatusBadge";
@@ -81,20 +81,105 @@ describe("compact UI primitives", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("does not let a lower overlay close or restore focus while a higher overlay is open", () => {
+    const lowerClose = vi.fn();
+    const higherClose = vi.fn();
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const view = render(
+      <>
+        <Drawer open title="底层抽屉" onRequestClose={lowerClose}><button>底层操作</button></Drawer>
+        <Dialog open title="顶层对话框" onRequestClose={higherClose}><button>顶层操作</button></Dialog>
+      </>,
+    );
+    const lower = screen.getByRole("dialog", { name: "底层抽屉" });
+    const higher = screen.getByRole("dialog", { name: "顶层对话框" });
+    expect(within(higher).getByRole("button", { name: "关闭" })).toHaveFocus();
+
+    fireEvent.keyDown(lower, { key: "Escape" });
+    expect(lowerClose).not.toHaveBeenCalled();
+    expect(higherClose).not.toHaveBeenCalled();
+    view.rerender(
+      <>
+        <Drawer open={false} title="底层抽屉" onRequestClose={lowerClose}><button>底层操作</button></Drawer>
+        <Dialog open title="顶层对话框" onRequestClose={higherClose}><button>顶层操作</button></Dialog>
+      </>,
+    );
+    expect(within(higher).getByRole("button", { name: "关闭" })).toHaveFocus();
+  });
+
+  it("traps Tab and Shift+Tab inside the topmost overlay", () => {
+    render(<Dialog open title="焦点测试" onRequestClose={vi.fn()}><button>第一个</button><button>第二个</button></Dialog>);
+    const dialog = screen.getByRole("dialog", { name: "焦点测试" });
+    const first = screen.getByRole("button", { name: "第一个" });
+    const second = screen.getByRole("button", { name: "第二个" });
+    second.focus();
+    fireEvent.keyDown(dialog, { key: "Tab" });
+    expect(screen.getByRole("button", { name: "关闭" })).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(second).toHaveFocus();
+    first.focus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(screen.getByRole("button", { name: "关闭" })).toHaveFocus();
+  });
+
+  it("keeps a dirty overlay open when no discard confirmation is provided", () => {
+    const onClose = vi.fn();
+    render(<Dialog open dirty title="未确认" onRequestClose={onClose}>内容</Dialog>);
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "未确认" }), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "未确认" })).toBeInTheDocument();
+  });
+
+  it("closes the topmost overlay from its backdrop only", () => {
+    const lowerClose = vi.fn();
+    const higherClose = vi.fn();
+    const view = render(
+      <>
+        <Drawer open title="底层遮罩" onRequestClose={lowerClose}>内容</Drawer>
+        <Dialog open title="顶层遮罩" onRequestClose={higherClose}>内容</Dialog>
+      </>,
+    );
+    const lowerBackdrop = screen.getByRole("dialog", { name: "底层遮罩" }).parentElement!;
+    const higherBackdrop = screen.getByRole("dialog", { name: "顶层遮罩" }).parentElement!;
+    fireEvent.mouseDown(lowerBackdrop);
+    expect(lowerClose).not.toHaveBeenCalled();
+    fireEvent.mouseDown(higherBackdrop);
+    expect(higherClose).toHaveBeenCalledOnce();
+    view.rerender(
+      <>
+        <Drawer open title="底层遮罩" onRequestClose={lowerClose}>内容</Drawer>
+        <Dialog open={false} title="顶层遮罩" onRequestClose={higherClose}>内容</Dialog>
+      </>,
+    );
+    fireEvent.mouseDown(screen.getByRole("dialog", { name: "底层遮罩" }).parentElement!);
+    expect(lowerClose).toHaveBeenCalledOnce();
+  });
+
+  it("cleans the overlay stack across StrictMode lifecycles", () => {
+    const onClose = vi.fn();
+    const view = render(<Dialog open title="严格模式" onRequestClose={onClose}>内容</Dialog>, { reactStrictMode: true });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "严格模式" }), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledOnce();
+    view.unmount();
+  });
+
   it("uses the compact control contract", () => {
     render(<StatusBadge tone="warning">缺料</StatusBadge>);
     expect(screen.getByText("缺料")).toHaveAttribute("data-tone", "warning");
   });
 
   it("keeps Vite and Tauri on the exact development origin", () => {
-    const viteConfig = viteConfigSource;
     const tauriConfig = JSON.parse(tauriConfigSource) as {
       build: { devUrl: string };
     };
+    const server = viteConfig.server;
 
-    expect(viteConfig).toMatch(/host:\s*["']127\.0\.0\.1["']/);
-    expect(viteConfig).toMatch(/port:\s*1420/);
-    expect(viteConfig).toMatch(/strictPort:\s*true/);
-    expect(tauriConfig.build.devUrl).toBe("http://127.0.0.1:1420");
+    expect(server).toBeDefined();
+    expect(server?.host).toBe("127.0.0.1");
+    expect(server?.port).toBe(1420);
+    expect(server?.strictPort).toBe(true);
+    expect(`http://${server?.host}:${server?.port}`).toBe(tauriConfig.build.devUrl);
   });
 });

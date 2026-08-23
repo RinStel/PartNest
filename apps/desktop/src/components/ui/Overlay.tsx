@@ -19,6 +19,50 @@ const focusableSelector = [
   "[tabindex]:not([tabindex=\"-1\"])",
 ].join(",");
 
+type OverlayEntry = {
+  id: symbol;
+  element: HTMLDivElement | null;
+};
+
+// Overlay lifetime is deliberately scoped to this renderer process. It is not persisted.
+const overlayStack: OverlayEntry[] = [];
+
+function registerOverlay(entry: OverlayEntry) {
+  unregisterOverlay(entry.id);
+  overlayStack.push(entry);
+}
+
+function unregisterOverlay(id: symbol) {
+  const index = overlayStack.findIndex((entry) => entry.id === id);
+  if (index >= 0) overlayStack.splice(index, 1);
+}
+
+function isTopmost(id: symbol) {
+  return overlayStack.at(-1)?.id === id;
+}
+
+function getTopmost() {
+  return overlayStack.at(-1) ?? null;
+}
+
+function getFocusableElements(element: HTMLElement) {
+  return Array.from(element.querySelectorAll<HTMLElement>(focusableSelector)).filter((candidate) => {
+    const style = window.getComputedStyle(candidate);
+    return style.display !== "none" && style.visibility !== "hidden";
+  });
+}
+
+function restoreFocus(previousFocus: HTMLElement | null) {
+  const topmost = getTopmost();
+  if (topmost) {
+    if (previousFocus?.isConnected && topmost.element?.contains(previousFocus)) previousFocus.focus();
+    else topmost.element?.focus();
+    return;
+  }
+  if (previousFocus?.isConnected) previousFocus.focus();
+  else document.body.focus();
+}
+
 function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, children, kind }: OverlayProps & { kind: "drawer" | "dialog" }) {
   const titleId = useId();
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -26,35 +70,47 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
   const wasOpenRef = useRef(false);
   const mountedRef = useRef(true);
   const openRef = useRef(open);
+  const idRef = useRef<symbol>();
   const closeAttemptRef = useRef(0);
   const pendingConfirmationRef = useRef(false);
   openRef.current = open;
+  if (!idRef.current) idRef.current = Symbol("overlay");
+  const id = idRef.current;
+
+  const closeOverlay = useCallback((restore = true) => {
+    const wasTopmost = isTopmost(id);
+    unregisterOverlay(id);
+    wasOpenRef.current = false;
+    closeAttemptRef.current += 1;
+    pendingConfirmationRef.current = false;
+    if (restore && wasTopmost) restoreFocus(previousFocusRef.current);
+    previousFocusRef.current = null;
+  }, [id]);
 
   useLayoutEffect(() => {
     if (open && !wasOpenRef.current) {
       wasOpenRef.current = true;
       previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      const firstFocusable = overlayRef.current?.querySelector<HTMLElement>(focusableSelector);
-      (firstFocusable ?? overlayRef.current)?.focus();
+      registerOverlay({ id, element: overlayRef.current });
+      if (isTopmost(id)) {
+        const firstFocusable = overlayRef.current ? getFocusableElements(overlayRef.current)[0] : null;
+        (firstFocusable ?? overlayRef.current)?.focus();
+      }
     } else if (!open && wasOpenRef.current) {
-      wasOpenRef.current = false;
-      closeAttemptRef.current += 1;
-      pendingConfirmationRef.current = false;
-      if (previousFocusRef.current?.isConnected) previousFocusRef.current.focus();
-      previousFocusRef.current = null;
+      closeOverlay();
     }
-  }, [open]);
+  }, [closeOverlay, id, open]);
 
   useLayoutEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      closeAttemptRef.current += 1;
+      if (wasOpenRef.current) closeOverlay(false);
     };
-  }, []);
+  }, [closeOverlay]);
 
   const requestClose = useCallback(() => {
-    if (!openRef.current || pendingConfirmationRef.current) return;
+    if (!openRef.current || !isTopmost(id) || pendingConfirmationRef.current) return;
     if (!dirty) {
       onRequestClose();
       return;
@@ -73,18 +129,43 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
 
     const finish = (confirmed: boolean) => {
       pendingConfirmationRef.current = false;
-      if (confirmed && mountedRef.current && openRef.current && attempt === closeAttemptRef.current) onRequestClose();
+      if (confirmed && mountedRef.current && openRef.current && isTopmost(id) && attempt === closeAttemptRef.current) onRequestClose();
     };
     if (typeof result === "boolean") finish(result);
     else void result.then(finish, () => finish(false));
-  }, [confirmDiscard, dirty, onRequestClose]);
+  }, [confirmDiscard, dirty, id, onRequestClose]);
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!isTopmost(id)) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      requestClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const surface = overlayRef.current;
+    if (!surface) return;
+    const focusable = getFocusableElements(surface);
+    event.preventDefault();
+    if (focusable.length === 0) {
+      surface.focus();
+      return;
+    }
+    const active = document.activeElement;
+    const activeIndex = focusable.indexOf(active as HTMLElement);
+    const nextIndex = event.shiftKey
+      ? (activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1)
+      : (activeIndex < 0 || activeIndex === focusable.length - 1 ? 0 : activeIndex + 1);
+    focusable[nextIndex].focus();
+  }, [id, requestClose]);
 
   if (!open) return null;
 
   return (
     <div
       className={`pn-overlay-backdrop pn-overlay-backdrop--${kind}`}
-      onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}
+      onMouseDown={(event) => { if (event.target === event.currentTarget && isTopmost(id)) requestClose(); }}
     >
       <div
         ref={overlayRef}
@@ -93,12 +174,7 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            requestClose();
-          }
-        }}
+        onKeyDown={handleKeyDown}
       >
         <header className="pn-overlay__header">
           <h2 id={titleId} className="pn-overlay__title">{title}</h2>
