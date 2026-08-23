@@ -34,8 +34,7 @@ export function MovementsPage({ api = desktopApi }: { api?: MovementsApi }) {
     }
   }
 
-  return <section aria-labelledby="movements-title">
-    <h2 id="movements-title">库存流水</h2>
+  return <section aria-label="库存流水">
     {error && <p role="alert">{error}</p>}
     {movements.length === 0 ? <p>暂无流水</p> : <table aria-label="库存流水列表">
       <thead><tr><th>时间</th><th>器件</th><th>变化量</th><th>变化前</th><th>变化后</th><th>原因</th><th>BOM备注名</th><th>操作</th></tr></thead>

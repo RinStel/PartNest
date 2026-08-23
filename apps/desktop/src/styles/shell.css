@@ -1,0 +1,77 @@
+html, body, #root { min-height: 100%; }
+
+.pn-shell {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 152px minmax(0, 1fr);
+  min-height: 100vh;
+  min-width: 0;
+  color: var(--text);
+  background: var(--bg-app);
+}
+
+.pn-shell[data-nav="collapsed"] { grid-template-columns: 44px minmax(0, 1fr); }
+
+.pn-shell__sidebar {
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.pn-shell__brand {
+  box-sizing: border-box;
+  display: flex;
+  min-height: var(--toolbar-height);
+  align-items: center;
+  justify-content: space-between;
+  gap: .25rem;
+  border-bottom: 1px solid var(--border);
+  padding: 0 .5rem .0 .75rem;
+}
+
+.pn-shell__brand-name { overflow: hidden; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.pn-shell__toggle { flex: 0 0 auto; }
+
+.pn-shell__nav {
+  display: flex;
+  flex-direction: column;
+  gap: .125rem;
+  padding: .5rem;
+}
+
+.pn-shell__nav-link {
+  box-sizing: border-box;
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: .5rem;
+  overflow: hidden;
+  border-radius: 3px;
+  padding: 0 .5rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.pn-shell__nav-link:hover,
+.pn-shell__nav-link[aria-current="page"] { color: var(--text); background: var(--bg-raised); }
+.pn-shell__nav-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.pn-shell[data-nav="collapsed"] .pn-shell__brand { justify-content: center; padding: 0 .25rem; }
+.pn-shell[data-nav="collapsed"] .pn-shell__brand-name { display: none; }
+.pn-shell[data-nav="collapsed"] .pn-shell__nav { padding: .5rem .25rem; }
+.pn-shell[data-nav="collapsed"] .pn-shell__nav-link { justify-content: center; padding: 0; }
+.pn-shell[data-nav="collapsed"] .pn-shell__nav-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.pn-shell__main { min-width: 0; overflow: hidden; }
+.pn-shell__content { box-sizing: border-box; min-width: 0; padding: .75rem; overflow: auto; }
+.pn-shell input, .pn-shell select, .pn-shell textarea { max-width: 100%; }

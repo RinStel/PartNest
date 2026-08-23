@@ -14,6 +14,8 @@ describe("App shell", () => {
     render(<App />);
     fireEvent.click(screen.getAllByRole("link", { name: "BOM" })[0]);
     expect(screen.getByRole("heading", { name: "BOM 分析" })).toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: "BOM 分析工具栏" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "BOM 分析" })).toHaveLength(1);
   });
 
   it("mounts the welding workspace at the welding destination", () => {

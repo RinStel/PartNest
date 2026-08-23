@@ -1,0 +1,112 @@
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { matchPath, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Icon } from "../components/ui/Icon";
+import { PageToolbar } from "../components/ui/PageToolbar";
+import { primaryRoutes } from "./routes";
+
+interface PageActionEntry {
+  id: string;
+  routeKey: string;
+  actions: ReactNode;
+}
+
+interface PageActionsContextValue {
+  entry: PageActionEntry | null;
+  register: (id: string, routeKey: string, actions: ReactNode) => void;
+  unregister: (id: string, routeKey: string) => void;
+}
+
+const PageActionsContext = createContext<PageActionsContextValue | null>(null);
+
+function PageActionsProvider({ routeKey, children }: { routeKey: string; children: ReactNode }): JSX.Element {
+  const [entry, setEntry] = useState<PageActionEntry | null>(null);
+  useEffect(() => {
+    setEntry((current) => current && current.routeKey !== routeKey ? null : current);
+  }, [routeKey]);
+  const register = useCallback((id: string, nextRouteKey: string, actions: ReactNode) => {
+    setEntry((current) => (
+      current?.id === id && current.routeKey === nextRouteKey && Object.is(current.actions, actions)
+        ? current
+        : { id, routeKey: nextRouteKey, actions }
+    ));
+  }, []);
+  const unregister = useCallback((id: string, nextRouteKey: string) => {
+    setEntry((current) => current?.id === id && current.routeKey === nextRouteKey ? null : current);
+  }, []);
+
+  return <PageActionsContext.Provider value={{ entry, register, unregister }}>{children}</PageActionsContext.Provider>;
+}
+
+/** Register actions in the current page toolbar for this route instance. */
+export function usePageActions(actions: ReactNode): void {
+  const context = useContext(PageActionsContext);
+  if (!context) throw new Error("usePageActions must be used inside AppShell");
+
+  const location = useLocation();
+  const id = useId();
+  const routeKey = `${location.pathname}${location.search}`;
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
+
+  useEffect(() => {
+    context.register(id, routeKey, actionsRef.current);
+    return () => context.unregister(id, routeKey);
+  }, [context.register, context.unregister, id, routeKey]);
+}
+
+function AppShellContent(): JSX.Element {
+  const location = useLocation();
+  const routeKey = `${location.pathname}${location.search}`;
+  const context = useContext(PageActionsContext);
+  const [navigationExpanded, setNavigationExpanded] = useState(true);
+  const route = primaryRoutes.find((candidate) => matchPath({ path: candidate.path, end: true }, location.pathname));
+  const actions = context?.entry?.routeKey === routeKey ? context.entry.actions : undefined;
+
+  return (
+    <div
+      className="pn-shell compact-desktop-shell"
+      data-testid="app-shell"
+      data-nav={navigationExpanded ? "expanded" : "collapsed"}
+    >
+      <aside className="pn-shell__sidebar">
+        <div className="pn-shell__brand">
+          <span className="pn-shell__brand-name">PartNest</span>
+          <button
+            className="pn-button pn-button--icon pn-button--ghost pn-shell__toggle"
+            type="button"
+            aria-label={navigationExpanded ? "折叠导航" : "展开导航"}
+            title={navigationExpanded ? "折叠导航" : "展开导航"}
+            onClick={() => setNavigationExpanded((expanded) => !expanded)}
+          >
+            <Icon name="menu" size={16} />
+          </button>
+        </div>
+        <nav aria-label="主导航" className="pn-shell__nav">
+          {primaryRoutes.map((candidate) => (
+            <NavLink
+              key={candidate.id}
+              to={candidate.path}
+              end
+              aria-label={candidate.label}
+              title={candidate.label}
+              className="pn-shell__nav-link"
+            >
+              <Icon name={candidate.icon} size={16} />
+              <span className="pn-shell__nav-label">{candidate.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+      </aside>
+      <main className="pn-shell__main">
+        <PageToolbar title={route?.title ?? "PartNest"} actions={actions} />
+        <div className="pn-shell__content"><Outlet /></div>
+      </main>
+    </div>
+  );
+}
+
+export function AppShell(): JSX.Element {
+  const location = useLocation();
+  const routeKey = `${location.pathname}${location.search}`;
+  return <PageActionsProvider routeKey={routeKey}><AppShellContent /></PageActionsProvider>;
+}

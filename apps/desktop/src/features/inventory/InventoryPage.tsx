@@ -58,8 +58,7 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }) {
     } catch (cause) { setError(errorMessage(cause)); }
   }
 
-  return <section aria-labelledby="inventory-title">
-    <h2 id="inventory-title">库存管理</h2>
+  return <section aria-label="库存管理">
     <label>搜索 <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名称、MPN 或 LCSC" /></label>
     {error && <p role="alert">{error}</p>}
     <form onSubmit={(event) => { event.preventDefault(); void save(); }}>

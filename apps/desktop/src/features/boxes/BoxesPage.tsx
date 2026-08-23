@@ -59,8 +59,7 @@ export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }) {
     } catch (cause) { setError(errorMessage(cause)); }
   }
 
-  return <section aria-labelledby="boxes-title">
-    <h2 id="boxes-title">收纳盒</h2>
+  return <section aria-label="收纳盒">
     <div className="form-row">
       <label>名称 <input value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label>行 <input type="number" min="1" value={rows} onChange={(event) => setRows(Number(event.target.value))} /></label>

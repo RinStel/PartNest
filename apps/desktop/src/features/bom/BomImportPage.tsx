@@ -6,8 +6,7 @@ export type { BomImportApi };
 
 export function BomImportPage({ api, pickFile }: { api?: BomImportApi; pickFile?: () => Promise<string | null> }) {
   const state = useBomImport({ api, pickFile });
-  return <section aria-labelledby="bom-import-title">
-    <h2 id="bom-import-title">BOM 分析</h2>
+  return <section aria-label="BOM 分析">
     <label>BOM备注名 <input value={state.displayName} onChange={(event) => state.setDisplayName(event.target.value)} /></label>
     <button type="button" onClick={() => void state.chooseFile()}>选择文件</button>
     {state.error && <p role="alert">{state.error}</p>}

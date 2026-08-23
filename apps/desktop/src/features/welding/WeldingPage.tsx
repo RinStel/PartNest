@@ -126,8 +126,7 @@ export function WeldingPage({ api = desktopApi }: { api?: WeldingApi }) {
       }
     }}
   >↔</button>;
-  return <section aria-labelledby="welding-title">
-    <h2 id="welding-title">焊接工作台</h2>
+  return <section aria-label="焊接工作台">
     {!session ? <p>暂无活动 BOM</p> : <div className="welding-workspace">
       <div className="welding-bom"><BomFrame src={cachedBomUrl(session.cache_path)} frameRef={frameRef} /></div>
       <div className="welding-right">

@@ -35,8 +35,7 @@ export function SettingsPage({ api = desktopApi, pickFile = pickBackupFile }: { 
     } finally { setBusy(false); }
   }
 
-  return <section aria-labelledby="settings-title">
-    <h2 id="settings-title">设置</h2>
+  return <section aria-label="设置">
     <section aria-labelledby="backup-title">
       <h3 id="backup-title">数据库备份</h3>
       <p>备份包含当前库存、流水和焊接进度。</p>
