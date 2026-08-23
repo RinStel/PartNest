@@ -124,6 +124,15 @@ describe("compact UI primitives", () => {
     expect(screen.getByRole("button", { name: "关闭" })).toHaveFocus();
   });
 
+  it("focuses the overlay surface when no focusable child remains", () => {
+    render(<Dialog open title="无焦点子节点" onRequestClose={vi.fn()}>静态内容</Dialog>);
+    const dialog = screen.getByRole("dialog", { name: "无焦点子节点" });
+    screen.getByRole("button", { name: "关闭" }).setAttribute("disabled", "true");
+    dialog.focus();
+    fireEvent.keyDown(dialog, { key: "Tab" });
+    expect(dialog).toHaveFocus();
+  });
+
   it("keeps a dirty overlay open when no discard confirmation is provided", () => {
     const onClose = vi.fn();
     render(<Dialog open dirty title="未确认" onRequestClose={onClose}>内容</Dialog>);
