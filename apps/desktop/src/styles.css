@@ -2,22 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { font-family: system-ui, sans-serif; color: #17202a; background: #f7f8fa; }
-body { margin: 0; }
-.app-header { padding: 1rem 1.5rem; background: #17202a; color: white; }
-.app-header h1 { margin: 0; font-size: 1.25rem; }
-.app-body { display: flex; min-height: calc(100vh - 60px); }
-nav { display: flex; flex-direction: column; gap: .25rem; width: 12rem; padding: 1rem; background: white; border-right: 1px solid #e2e6ea; }
-nav a { padding: .65rem .75rem; color: inherit; text-decoration: none; border-radius: .35rem; }
-nav a:hover { background: #eef2f6; }
-main { flex: 1; padding: 1.5rem; }
+:root { font-family: system-ui, sans-serif; color: var(--text); background: var(--bg-app); }
+body { margin: 0; min-width: 0; color: var(--text); background: var(--bg-app); font-size: 13px; }
+.app-header { box-sizing: border-box; display: flex; min-height: var(--toolbar-height); align-items: center; padding: 0 .75rem; background: var(--bg-panel); border-bottom: 1px solid var(--border); }
+.app-header h1 { margin: 0; font-size: 14px; }
+.app-body { display: flex; min-height: calc(100vh - var(--toolbar-height)); }
+.app-shell nav { display: flex; flex-direction: column; gap: .25rem; width: 152px; box-sizing: border-box; padding: .5rem; background: var(--bg-panel); border-right: 1px solid var(--border); }
+.app-shell nav a { padding: .45rem .5rem; color: var(--text-muted); text-decoration: none; border-radius: 3px; }
+.app-shell nav a:hover, .app-shell nav a[aria-current="page"] { color: var(--text); background: var(--bg-raised); }
+.app-shell main { min-width: 0; flex: 1; padding: .75rem; overflow: auto; }
+.app-shell input, .app-shell select, .app-shell textarea { max-width: 100%; }
 .welding-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(22rem, 34rem); gap: 1rem; min-height: 70vh; }
-.welding-bom { min-height: 30rem; background: white; border: 1px solid #e2e6ea; }
+.welding-bom { min-height: 30rem; background: var(--bg-panel); border: 1px solid var(--border); }
 .welding-bom iframe { display: block; width: 100%; height: 100%; min-height: 30rem; border: 0; }
 .welding-right { display: flex; flex-direction: column; gap: .75rem; }
 .welding-sides { display: flex; gap: .5rem; }
-.welding-component-table { overflow: auto; background: white; border: 1px solid #e2e6ea; }
+.welding-component-table { overflow: auto; background: var(--bg-panel); border: 1px solid var(--border); }
 .welding-component-table [role="row"] { display: flex; min-width: 30rem; }
-.welding-component-table [role="columnheader"], .welding-component-table [role="cell"] { box-sizing: border-box; flex: 0 0 auto; padding: .5rem; border-bottom: 1px solid #e2e6ea; }
+.welding-component-table [role="columnheader"], .welding-component-table [role="cell"] { box-sizing: border-box; flex: 0 0 auto; padding: .5rem; border-bottom: 1px solid var(--border); }
 .welding-component-table [role="columnheader"] { font-weight: 600; }
 .welding-component-table [role="separator"] { cursor: col-resize; padding: 0 .15rem; border: 0; background: transparent; }
