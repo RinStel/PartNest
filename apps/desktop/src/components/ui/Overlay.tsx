@@ -22,14 +22,17 @@ const focusableSelector = [
 type OverlayEntry = {
   id: symbol;
   element: HTMLDivElement | null;
+  order: number;
 };
 
 // Overlay lifetime is deliberately scoped to this renderer process. It is not persisted.
 const overlayStack: OverlayEntry[] = [];
+let nextOverlayOrder = 0;
 
 function registerOverlay(entry: OverlayEntry) {
   unregisterOverlay(entry.id);
   overlayStack.push(entry);
+  overlayStack.sort((left, right) => left.order - right.order);
 }
 
 function unregisterOverlay(id: symbol) {
@@ -71,6 +74,8 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
   const mountedRef = useRef(true);
   const openRef = useRef(open);
   const idRef = useRef<symbol>();
+  const orderRef = useRef<number | null>(null);
+  const registeredRef = useRef(false);
   const closeAttemptRef = useRef(0);
   const pendingConfirmationRef = useRef(false);
   openRef.current = open;
@@ -80,7 +85,9 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
   const closeOverlay = useCallback((restore = true) => {
     const wasTopmost = isTopmost(id);
     unregisterOverlay(id);
+    registeredRef.current = false;
     wasOpenRef.current = false;
+    orderRef.current = null;
     closeAttemptRef.current += 1;
     pendingConfirmationRef.current = false;
     if (restore && wasTopmost) restoreFocus(previousFocusRef.current);
@@ -88,11 +95,15 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
   }, [id]);
 
   useLayoutEffect(() => {
-    if (open && !wasOpenRef.current) {
-      wasOpenRef.current = true;
-      previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      registerOverlay({ id, element: overlayRef.current });
-      if (isTopmost(id)) {
+    if (open) {
+      if (!wasOpenRef.current) {
+        wasOpenRef.current = true;
+        orderRef.current = nextOverlayOrder++;
+        previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      }
+      if (!registeredRef.current) {
+        registerOverlay({ id, element: overlayRef.current, order: orderRef.current! });
+        registeredRef.current = true;
         const firstFocusable = overlayRef.current ? getFocusableElements(overlayRef.current)[0] : null;
         (firstFocusable ?? overlayRef.current)?.focus();
       }
@@ -103,11 +114,24 @@ function Overlay({ open, title, dirty = false, onRequestClose, confirmDiscard, c
 
   useLayoutEffect(() => {
     mountedRef.current = true;
+    // React StrictMode performs a simulated cleanup/setup pair. The cleanup
+    // unregisters immediately, while this setup preserves the original
+    // pre-open focus captured by the first setup.
     return () => {
       mountedRef.current = false;
-      if (wasOpenRef.current) closeOverlay(false);
+      unregisterOverlay(id);
+      registeredRef.current = false;
+      closeAttemptRef.current += 1;
+      pendingConfirmationRef.current = false;
+      queueMicrotask(() => {
+        if (!mountedRef.current) {
+          wasOpenRef.current = false;
+          previousFocusRef.current = null;
+          orderRef.current = null;
+        }
+      });
     };
-  }, [closeOverlay]);
+  }, [id]);
 
   const requestClose = useCallback(() => {
     if (!openRef.current || !isTopmost(id) || pendingConfirmationRef.current) return;

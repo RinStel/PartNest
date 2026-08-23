@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import viteConfig from "../../../vite.config";
 import tauriConfigSource from "../../../src-tauri/tauri.conf.json?raw";
@@ -7,6 +7,7 @@ import { Dialog, Drawer } from "./Overlay";
 import { StatusBadge } from "./StatusBadge";
 
 afterEach(() => {
+  cleanup();
   document.body.innerHTML = "";
   vi.restoreAllMocks();
 });
@@ -167,11 +168,34 @@ describe("compact UI primitives", () => {
   });
 
   it("cleans the overlay stack across StrictMode lifecycles", () => {
+    const trigger = document.createElement("button");
+    trigger.textContent = "严格模式触发器";
+    document.body.appendChild(trigger);
+    trigger.focus();
     const onClose = vi.fn();
     const view = render(<Dialog open title="严格模式" onRequestClose={onClose}>内容</Dialog>, { reactStrictMode: true });
+    expect(screen.getByRole("button", { name: "关闭" })).toHaveFocus();
     fireEvent.keyDown(screen.getByRole("dialog", { name: "严格模式" }), { key: "Escape" });
     expect(onClose).toHaveBeenCalledOnce();
+    view.rerender(<Dialog open={false} title="严格模式" onRequestClose={onClose}>内容</Dialog>);
+    expect(trigger).toHaveFocus();
     view.unmount();
+  });
+
+  it("cleans references when an open StrictMode overlay genuinely unmounts", () => {
+    const firstTrigger = document.createElement("button");
+    document.body.appendChild(firstTrigger);
+    firstTrigger.focus();
+    const first = render(<Dialog open title="已卸载" onRequestClose={vi.fn()}>内容</Dialog>, { reactStrictMode: true });
+    first.unmount();
+
+    const nextTrigger = document.createElement("button");
+    document.body.appendChild(nextTrigger);
+    nextTrigger.focus();
+    const next = render(<Dialog open title="下一层" onRequestClose={vi.fn()}>内容</Dialog>, { reactStrictMode: true });
+    next.rerender(<Dialog open={false} title="下一层" onRequestClose={vi.fn()}>内容</Dialog>);
+    expect(nextTrigger).toHaveFocus();
+    next.unmount();
   });
 
   it("uses the compact control contract", () => {
