@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { BomGroup, InventoryPart, MatchResult } from "../../../../../packages/domain/src/bom/types";
 import { matchBomGroup } from "../../../../../packages/domain/src/bom/matching";
 import { desktopApi, type Part } from "../../app/tauri";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 export type FieldName = "quantity" | "designators" | "name" | "value" | "package" | "manufacturer" | "mpn" | "lcsc_code" | "side";
 export type FieldMapping = Partial<Record<FieldName, string>>;
@@ -125,6 +125,17 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
   const [bom, setBom] = useState<NormalizedBomDto | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
   const [rows, setRows] = useState<BomAnalysisRow[]>([]);
+  const pendingImportRef = useRef<{
+    status: typeof status;
+    error: string;
+    path: string;
+    displayName: string;
+    headers: string[];
+    mapping: FieldMapping;
+    bom: NormalizedBomDto | null;
+    parts: Part[];
+    rows: BomAnalysisRow[];
+  } | null>(null);
 
   const inspect = useCallback(async (sourcePath: string, supplied?: FieldMapping, suppliedDisplayName?: string) => {
     const extension = sourcePath.slice(sourcePath.lastIndexOf(".")).toLowerCase();
@@ -140,19 +151,35 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
       if (result.kind !== "Ready") { setStatus("error"); setError(result.message ?? "BOM 导入失败"); return; }
       const listed = await api.listParts();
       setBom(result.bom); setParts(listed); setRows(createAnalysisRows(result.bom, listed)); setStatus("ready");
+      pendingImportRef.current = null;
     } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
   }, [api, displayName]);
 
   const chooseFile = useCallback(async () => {
     const selected = await pickFile();
     if (!selected) return;
+    pendingImportRef.current = { status, error, path, displayName, headers, mapping, bom, parts, rows };
     const defaultName = selected.split(/[\\/]/).pop() ?? selected;
     const remark = displayName.trim() || defaultName;
     if (!displayName.trim()) setDisplayName(defaultName);
     await inspect(selected, undefined, remark);
-  }, [displayName, inspect, pickFile]);
+  }, [bom, displayName, error, headers, inspect, mapping, parts, path, pickFile, rows, status]);
   const submitMapping = useCallback(async (next = mapping) => { setMapping(next); if (path) await inspect(path, next); }, [inspect, mapping, path]);
   const cancelMapping = useCallback(() => {
+    const previous = pendingImportRef.current;
+    if (previous) {
+      setStatus(previous.bom ? "ready" : "idle");
+      setError(previous.error);
+      setPath(previous.path);
+      setDisplayName(previous.displayName);
+      setHeaders(previous.headers);
+      setMapping(previous.mapping);
+      setBom(previous.bom);
+      setParts(previous.parts);
+      setRows(previous.rows);
+      pendingImportRef.current = null;
+      return;
+    }
     setStatus(bom ? "ready" : "idle");
     setHeaders([]);
     setMapping({});

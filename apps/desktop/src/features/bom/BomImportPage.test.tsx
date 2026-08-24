@@ -144,4 +144,39 @@ describe("BomImportPage", () => {
     expect(candidate.closest("[role=\"status\"]")).toHaveAttribute("data-tone", "warning");
     expect(screen.getAllByRole("cell", { name: "5" }).length).toBeGreaterThan(0);
   });
+
+  it("restores the previous BOM when a replacement mapping is cancelled", async () => {
+    const inspectTabularBom = vi.fn()
+      .mockResolvedValueOnce(ready)
+      .mockResolvedValueOnce({ kind: "NeedsMapping" as const, headers: ["Part", "Qty"], suggestions: {} });
+    const pickFile = vi.fn()
+      .mockResolvedValueOnce("old.csv")
+      .mockResolvedValueOnce("new.csv");
+    renderPage(<BomImportPage api={api({ inspectTabularBom })} pickFile={pickFile} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    expect(await screen.findByText("缺料分析")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    expect(await screen.findByRole("dialog", { name: "字段映射" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "字段映射" })).not.toBeInTheDocument());
+    expect(screen.getByText("缺料分析")).toBeInTheDocument();
+    expect(screen.getByLabelText("BOM备注名")).toHaveValue("old.csv");
+    expect(screen.getByTitle("old.csv")).toBeInTheDocument();
+  });
+
+  it("clears the automatically filled filename after cancelling the first mapping", async () => {
+    const inspectTabularBom = vi.fn().mockResolvedValue({ kind: "NeedsMapping" as const, headers: ["Part", "Qty"], suggestions: {} });
+    renderPage(<BomImportPage api={api({ inspectTabularBom })} pickFile={vi.fn().mockResolvedValue("new.csv")} />);
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    expect(await screen.findByRole("dialog", { name: "字段映射" })).toBeVisible();
+    expect(screen.getByLabelText("BOM备注名")).toHaveValue("new.csv");
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "字段映射" })).not.toBeInTheDocument());
+    expect(screen.getByLabelText("BOM备注名")).toHaveValue("");
+    expect(screen.queryByTitle("new.csv")).not.toBeInTheDocument();
+    expect(screen.queryByText("缺料分析")).not.toBeInTheDocument();
+  });
 });
