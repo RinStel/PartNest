@@ -22,7 +22,6 @@ export type PartInput = {
 };
 
 export type Part = PartInput & { id: string; version: number };
-export type LcscPart = Pick<PartInput, "lcsc_code" | "name" | "category" | "package" | "manufacturer" | "mpn">;
 export type PartDto = Omit<PartInput, "category" | "package" | "manufacturer" | "mpn" | "lcsc_code" | "note"> & {
   id: string;
   category: string | null;
@@ -149,7 +148,6 @@ export type DesktopApi = {
   updatePart: (id: string, expectedVersion: number, input: PartInput) => Promise<Part>;
   adjustStock: (id: string, delta: number, reason: string) => Promise<Part>;
   deletePart: (id: string) => Promise<void>;
-  lookupLcsc: (lcscCode: string) => Promise<LcscPart>;
   restoreActiveInteractiveBom: () => Promise<CachedBomSession | null>;
   resolveBomSelection: (token: string, designators: string[]) => Promise<ResolvedBomSelection>;
   confirmTake: (input: ConfirmTakeInput) => Promise<TakeResult>;
@@ -171,7 +169,6 @@ export const desktopApi: DesktopApi = {
   updatePart: async (id, expectedVersion, input) => normalizePart(await invoke<PartDto>("update_part", { id, expectedVersion, input })),
   adjustStock: async (id, delta, reason) => normalizePart(await invoke<PartDto>("adjust_stock", { id, delta, reason })),
   deletePart: (id) => invoke("delete_part", { id }),
-  lookupLcsc: (lcscCode) => invoke("lookup_lcsc", { lcscCode }),
   restoreActiveInteractiveBom: () => invoke("restore_active_interactive_bom"),
   resolveBomSelection: (token, designators) => invoke("resolve_bom_selection", { token, designators }),
   confirmTake: (input) => invoke("confirm_take", { input }),

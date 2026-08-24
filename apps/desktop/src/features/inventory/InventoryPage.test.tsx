@@ -33,21 +33,16 @@ describe("InventoryPage", () => {
     await waitFor(() => expect(api.createPart).toHaveBeenCalledWith(expect.objectContaining({ box_id: "box-1", slot: "A1", quantity: 99 })));
   });
 
-  it("fills only blank fields from LCSC lookup and uses explicit refill to overwrite", async () => {
+  it("keeps the LCSC ID as a manual field without a lookup action", async () => {
     const api = {
       listParts: vi.fn().mockResolvedValue([]), listBoxes: vi.fn().mockResolvedValue([box]), createPart: vi.fn(), updatePart: vi.fn(), adjustStock: vi.fn(),
       lookupLcsc: vi.fn().mockResolvedValue({ lcsc_code: "C25804", name: "100kΩ 电阻", category: "电阻", package: "0402", manufacturer: "UNI-ROYAL", mpn: "0402WGF1003TEE" }),
     };
     render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
     fireEvent.click(screen.getByRole("button", { name: "新增器件" }));
-    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "手填名称" } });
     fireEvent.change(screen.getByLabelText("LCSC"), { target: { value: "C25804" } });
-    fireEvent.click(screen.getByRole("button", { name: "查询 LCSC" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "重新填充" })).toBeVisible());
-    expect(screen.getByLabelText("封装")).toHaveValue("0402");
-    expect(screen.getByLabelText("名称")).toHaveValue("手填名称");
-    fireEvent.click(screen.getByRole("button", { name: "重新填充" }));
-    expect(screen.getByLabelText("名称")).toHaveValue("100kΩ 电阻");
+    expect(screen.queryByRole("button", { name: "查询 LCSC" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("LCSC")).toHaveValue("C25804");
   });
 
   it("routes cancel and repeated new through dirty confirmation", async () => {

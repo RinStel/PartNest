@@ -1,6 +1,5 @@
 pub mod bom;
 pub mod boxes;
-pub mod lcsc;
 pub mod movements;
 pub mod parts;
 pub mod settings;

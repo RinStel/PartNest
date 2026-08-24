@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Box, DesktopApi, desktopApi, errorMessage, LcscPart, normalizePart, Part, PartInput } from "../../app/tauri";
+import { Box, DesktopApi, desktopApi, errorMessage, normalizePart, Part, PartInput } from "../../app/tauri";
 import { DataTable, type DataColumn } from "../../components/ui/DataTable";
 import { usePageActions } from "../../app/AppShell";
 import { PartDrawer } from "./PartDrawer";
 
 const blankPart: PartInput = { name: "", category: "", package: "", manufacturer: "", mpn: "", lcsc_code: "", quantity: 0, box_id: "", slot: "", note: "" };
-type InventoryApi = Pick<DesktopApi, "listParts" | "createPart" | "updatePart" | "adjustStock"> & Partial<Pick<DesktopApi, "deletePart" | "listBoxes" | "lookupLcsc">>;
+type InventoryApi = Pick<DesktopApi, "listParts" | "createPart" | "updatePart" | "adjustStock"> & Partial<Pick<DesktopApi, "deletePart" | "listBoxes">>;
 const toInput = (part: Part): PartInput => ({ ...part, category: part.category ?? "", package: part.package ?? "", manufacturer: part.manufacturer ?? "", mpn: part.mpn ?? "", lcsc_code: part.lcsc_code ?? "", note: part.note ?? "" });
 
 export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX.Element {
@@ -19,17 +19,16 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
   const [adjustment, setAdjustment] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [quantityText, setQuantityText] = useState("0");
-  const [lcscResult, setLcscResult] = useState<LcscPart | null>(null);
   const load = async () => { try { const [partResult, boxResult] = await Promise.all([api.listParts(search), api.listBoxes ? api.listBoxes() : Promise.resolve([])]); setParts(partResult.map(normalizePart)); setBoxes(boxResult); } catch (cause) { setError(errorMessage(cause)); } };
   useEffect(() => { void load(); }, [search]);
   const setField = (field: keyof PartInput, value: string | number) => setForm((current) => ({ ...current, [field]: value }));
-  const beginCreate = () => { setEditing(null); setForm({ ...blankPart }); setQuantityText("0"); setLcscResult(null); setError(""); setDrawerOpen(true); };
+  const beginCreate = () => { setEditing(null); setForm({ ...blankPart }); setQuantityText("0"); setError(""); setDrawerOpen(true); };
   const openCreate = () => {
     if (drawerOpen) { const requestClose = drawerCloseRef.current; if (requestClose) void requestClose().then((closed) => { if (closed) beginCreate(); }); return; }
     beginCreate();
   };
-  const openEdit = (part: Part) => { setEditing(part); setForm(toInput(part)); setQuantityText(String(part.quantity)); setLcscResult(null); setError(""); setDrawerOpen(true); };
-  const closeDrawer = () => { setDrawerOpen(false); setEditing(null); setForm({ ...blankPart }); setQuantityText("0"); setLcscResult(null); };
+  const openEdit = (part: Part) => { setEditing(part); setForm(toInput(part)); setQuantityText(String(part.quantity)); setError(""); setDrawerOpen(true); };
+  const closeDrawer = () => { setDrawerOpen(false); setEditing(null); setForm({ ...blankPart }); setQuantityText("0"); };
   async function save() {
     setError("");
     try {
@@ -38,19 +37,6 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
       const saved = normalizePart(editing ? await api.updatePart(editing.id, editing.version, input) : await api.createPart(input));
       setParts((current) => editing ? current.map((part) => part.id === saved.id ? saved : part) : [...current, saved]);
       closeDrawer();
-    } catch (cause) { setError(errorMessage(cause)); }
-  }
-  async function lookupLcsc(overwrite: boolean) {
-    if (overwrite && lcscResult) {
-      setForm((current) => ({ ...current, ...lcscResult }));
-      return;
-    }
-    if (!api.lookupLcsc) { setError("LCSC 查询不可用"); return; }
-    setError("");
-    try {
-      const result = await api.lookupLcsc(form.lcsc_code.trim());
-      setLcscResult(result);
-      setForm((current) => ({ ...current, ...Object.fromEntries(Object.entries(result).filter(([key, value]) => key === "lcsc_code" || overwrite || !current[key as keyof PartInput]).map(([key, value]) => [key, value])) }));
     } catch (cause) { setError(errorMessage(cause)); }
   }
   async function adjust(part: Part) {
@@ -90,6 +76,6 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
     {!inShell && <div className="inventory-local-toolbar">{toolbarActions}</div>}
     {error && !drawerOpen && <p className="pn-inline-error" role="alert">{error}</p>}
     <DataTable label="器件列表" rows={parts} columns={columns} rowKey={(part) => part.id} emptyText="暂无器件" />
-    <PartDrawer open={drawerOpen} editing={editing} form={form} boxes={boxes} quantityText={quantityText} error={error} lcscResult={lcscResult} onChange={setField} onQuantityChange={setQuantityText} onLookupLcsc={(overwrite) => void lookupLcsc(overwrite)} onSave={() => void save()} onRequestClose={closeDrawer} onRequestCloseReady={(request) => { drawerCloseRef.current = request; }} />
+    <PartDrawer open={drawerOpen} editing={editing} form={form} boxes={boxes} quantityText={quantityText} error={error} onChange={setField} onQuantityChange={setQuantityText} onSave={() => void save()} onRequestClose={closeDrawer} onRequestCloseReady={(request) => { drawerCloseRef.current = request; }} />
   </section>;
 }
