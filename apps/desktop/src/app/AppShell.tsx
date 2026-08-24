@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { matchPath, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Icon } from "../components/ui/Icon";
 import { PageToolbar } from "../components/ui/PageToolbar";
@@ -76,6 +76,9 @@ function AppShellContent(): JSX.Element {
   const routeKey = `${location.pathname}${location.search}`;
   const context = useContext(PageActionsContext);
   const [navigationExpanded, setNavigationExpanded] = useState(true);
+  useLayoutEffect(() => {
+    document.documentElement.setAttribute("data-theme", "dark");
+  }, []);
   const route = primaryRoutes.find((candidate) => matchPath({ path: candidate.path, end: true }, location.pathname));
   const actions = context
     ? context.entries.filter((entry) => entry.routeKey === routeKey).map((entry) => <span key={entry.id}>{entry.actions}</span>)

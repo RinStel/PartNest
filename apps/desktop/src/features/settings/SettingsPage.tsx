@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { desktopApi, errorMessage, type DesktopApi } from "../../app/tauri";
+import { StatusBadge } from "../../components/ui/StatusBadge";
 
 export type SettingsApi = Pick<DesktopApi, "createBackup" | "restoreBackup">;
 
@@ -35,13 +36,16 @@ export function SettingsPage({ api = desktopApi, pickFile = pickBackupFile }: { 
     } finally { setBusy(false); }
   }
 
-  return <section aria-label="设置">
-    <section aria-labelledby="backup-title">
-      <h3 id="backup-title">数据库备份</h3>
-      <p>备份包含当前库存、流水和焊接进度。</p>
+  return <section className="operations-page settings-page" aria-label="设置">
+    <section className="settings-group" aria-labelledby="backup-title">
+      <h2 id="backup-title">数据与备份</h2>
       <button type="button" disabled={busy} onClick={() => void create()}>立即备份</button>
       <button type="button" disabled={busy} onClick={() => void restore()}>选择备份恢复</button>
-      <p>恢复会覆盖当前数据库，请选择明确的备份文件。</p>
+      <p className="settings-risk">恢复会覆盖当前数据。</p>
+    </section>
+    <section className="settings-group" aria-labelledby="interface-title">
+      <h2 id="interface-title">界面</h2>
+      <p className="settings-value"><span>主题</span><StatusBadge tone="active">深色主题</StatusBadge></p>
     </section>
     {notice && <p role="status">{notice}</p>}
     {error && <p role="alert">{error}</p>}

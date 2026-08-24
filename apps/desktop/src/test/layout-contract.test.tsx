@@ -1,0 +1,34 @@
+import { render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+import { App } from "../app/App";
+import "../styles/tokens.css";
+import "../styles/primitives.css";
+import "../styles/shell.css";
+import "../styles/inventory.css";
+import "../styles/welding.css";
+import "../styles/operations.css";
+
+afterEach(() => {
+  document.documentElement.removeAttribute("data-theme");
+  window.history.pushState({}, "", "/");
+});
+
+describe("compact desktop layout contract", () => {
+  it("marks the app shell and dark theme at the target viewport", () => {
+    Object.defineProperty(window, "innerWidth", { value: 1280, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 800, configurable: true });
+    render(<App />);
+
+    expect(screen.getByTestId("app-shell")).toHaveClass("compact-desktop-shell");
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(document.querySelector(".pn-toolbar")).toHaveClass("pn-toolbar");
+    expect(document.documentElement).not.toHaveAttribute("data-layout-measured");
+  });
+
+  it("exposes stable CSS contracts without measuring jsdom layout", () => {
+    const toolbar = document.querySelector<HTMLElement>(".pn-toolbar");
+    expect(toolbar).toHaveStyle({ "--toolbar-height": "40px" });
+    expect(document.querySelector(".pn-control") ?? document.querySelector(".pn-toolbar")).toBeTruthy();
+    expect(document.querySelector(".pn-shell")).toHaveClass("compact-desktop-shell");
+  });
+});

@@ -21,12 +21,17 @@ describe("SettingsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "立即备份" }));
     await waitFor(() => expect(api.createBackup).toHaveBeenCalledOnce());
-    expect(screen.getByRole("status")).toHaveTextContent("备份已创建");
+    expect(screen.getByText(/备份已创建/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "选择备份恢复" }));
     await waitFor(() => expect(pickFile).toHaveBeenCalledOnce());
     await waitFor(() => expect(api.restoreBackup).toHaveBeenCalledWith("C:/backups/selected.db"));
-    expect(screen.getByRole("status")).toHaveTextContent("已恢复备份");
+    expect(screen.getByText(/已恢复备份/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "数据与备份" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "界面" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading")).toHaveLength(2);
+    expect(screen.queryByText("备份包含当前库存、流水和焊接进度。")) .not.toBeInTheDocument();
+    expect(screen.getByText("深色主题")).toBeInTheDocument();
   });
 
   it("configures the file picker for database backups and handles cancellation", async () => {

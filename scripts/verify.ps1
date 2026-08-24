@@ -23,6 +23,7 @@ try {
     Invoke-VerificationCommand "pnpm" @("build")
     Invoke-VerificationCommand "cargo" @("test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml")
     Invoke-VerificationCommand "cargo" @("fmt", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "--check")
+    Invoke-VerificationCommand ".\node_modules\.bin\tsc.CMD" @("-p", "apps/desktop/tsconfig.json", "--noEmit")
     Invoke-VerificationCommand "pnpm" @("--filter", "@partnest/desktop", "tauri", "build")
     Invoke-VerificationCommand "git" @("diff", "--check")
 }
