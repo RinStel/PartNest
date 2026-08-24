@@ -1,0 +1,13 @@
+.bom-toolbar__remark { display: inline-flex; align-items: center; gap: .35rem; color: var(--text-muted); white-space: nowrap; }
+.bom-toolbar__remark .pn-control { width: 12rem; }
+.bom-toolbar__file { max-width: 14rem; overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.bom-analysis { display: flex; min-width: 0; flex-direction: column; gap: .5rem; padding: .75rem; }
+.bom-analysis__title { margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+.bom-analysis .pn-table-wrap { overflow: auto; border: 1px solid var(--border); }
+.bom-analysis .pn-data-table { min-width: 860px; }
+.bom-match-cell { display: inline-flex; align-items: center; flex-wrap: wrap; gap: .25rem; }
+.bom-match-cell .pn-button { min-height: 24px; padding: 0 .4rem; font-size: 12px; }
+.bom-mapping-form { display: grid; gap: .5rem; }
+.bom-mapping-form .pn-form-field { display: grid; grid-template-columns: 6rem minmax(0, 1fr); align-items: center; gap: .5rem; }
+.bom-mapping-form .pn-form-field__label { color: var(--text-muted); }
+.bom-mapping-actions { display: flex; justify-content: flex-end; gap: .375rem; padding-top: .25rem; }

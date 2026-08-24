@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { BomGroup, InventoryPart, MatchResult } from "../../../../../packages/domain/src/bom/types";
 import { matchBomGroup } from "../../../../../packages/domain/src/bom/matching";
 import { desktopApi, type Part } from "../../app/tauri";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 export type FieldName = "quantity" | "designators" | "name" | "value" | "package" | "manufacturer" | "mpn" | "lcsc_code" | "side";
 export type FieldMapping = Partial<Record<FieldName, string>>;
@@ -126,7 +126,7 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
   const [parts, setParts] = useState<Part[]>([]);
   const [rows, setRows] = useState<BomAnalysisRow[]>([]);
 
-  async function inspect(sourcePath: string, supplied?: FieldMapping, suppliedDisplayName?: string) {
+  const inspect = useCallback(async (sourcePath: string, supplied?: FieldMapping, suppliedDisplayName?: string) => {
     const extension = sourcePath.slice(sourcePath.lastIndexOf(".")).toLowerCase();
     if (!supported.has(extension)) { setStatus("unsupported"); setError("不支持的 BOM 格式"); return; }
     setPath(sourcePath); setError(""); setStatus("loading");
@@ -141,23 +141,29 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
       const listed = await api.listParts();
       setBom(result.bom); setParts(listed); setRows(createAnalysisRows(result.bom, listed)); setStatus("ready");
     } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
-  }
+  }, [api, displayName]);
 
-  async function chooseFile() {
+  const chooseFile = useCallback(async () => {
     const selected = await pickFile();
     if (!selected) return;
     const defaultName = selected.split(/[\\/]/).pop() ?? selected;
     const remark = displayName.trim() || defaultName;
     if (!displayName.trim()) setDisplayName(defaultName);
     await inspect(selected, undefined, remark);
-  }
-  async function submitMapping(next = mapping) { setMapping(next); if (path) await inspect(path, next); }
-  function confirmMatch(componentKey: string, partId: string) {
+  }, [displayName, inspect, pickFile]);
+  const submitMapping = useCallback(async (next = mapping) => { setMapping(next); if (path) await inspect(path, next); }, [inspect, mapping, path]);
+  const cancelMapping = useCallback(() => {
+    setStatus(bom ? "ready" : "idle");
+    setHeaders([]);
+    setMapping({});
+    if (!bom) setPath("");
+  }, [bom]);
+  const confirmMatch = useCallback((componentKey: string, partId: string) => {
     if (!bom) return;
     const next = createAnalysisRows(bom, parts, Object.fromEntries(rows.map((row) => [row.componentKey, row.partId ?? ""]).filter(([, id]) => id).concat([[componentKey, partId]])));
     setRows(next);
-  }
-  return { status, error, path, displayName, setDisplayName, headers, mapping, setMapping, bom, rows, chooseFile, inspect, submitMapping, confirmMatch, fieldNames };
+  }, [bom, parts, rows]);
+  return { status, error, path, displayName, setDisplayName, headers, mapping, setMapping, bom, rows, chooseFile, inspect, submitMapping, cancelMapping, confirmMatch, fieldNames };
 }
 
 export { fieldNames };
