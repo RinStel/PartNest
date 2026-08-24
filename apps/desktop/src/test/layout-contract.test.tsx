@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { App } from "../app/App";
 import "../styles/tokens.css";
@@ -9,6 +9,7 @@ import "../styles/welding.css";
 import "../styles/operations.css";
 
 afterEach(() => {
+  cleanup();
   document.documentElement.removeAttribute("data-theme");
   window.history.pushState({}, "", "/");
 });
@@ -26,6 +27,7 @@ describe("compact desktop layout contract", () => {
   });
 
   it("exposes stable CSS contracts without measuring jsdom layout", () => {
+    render(<App />);
     const toolbar = document.querySelector<HTMLElement>(".pn-toolbar");
     expect(toolbar).toHaveStyle({ "--toolbar-height": "40px" });
     expect(document.querySelector(".pn-control") ?? document.querySelector(".pn-toolbar")).toBeTruthy();
