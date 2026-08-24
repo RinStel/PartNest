@@ -168,7 +168,7 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
   const cancelMapping = useCallback(() => {
     const previous = pendingImportRef.current;
     if (previous) {
-      setStatus(previous.bom ? "ready" : "idle");
+      setStatus(previous.status);
       setError(previous.error);
       setPath(previous.path);
       setDisplayName(previous.displayName);

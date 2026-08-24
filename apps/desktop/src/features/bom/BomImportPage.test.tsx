@@ -179,4 +179,29 @@ describe("BomImportPage", () => {
     expect(screen.queryByTitle("new.csv")).not.toBeInTheDocument();
     expect(screen.queryByText("缺料分析")).not.toBeInTheDocument();
   });
+
+  it("restores an unsupported state when mapping follows an unsupported replacement", async () => {
+    const inspectTabularBom = vi.fn()
+      .mockResolvedValueOnce(ready)
+      .mockResolvedValueOnce({ kind: "NeedsMapping" as const, headers: ["Part", "Qty"], suggestions: {} });
+    const pickFile = vi.fn()
+      .mockResolvedValueOnce("old.csv")
+      .mockResolvedValueOnce("notes.txt")
+      .mockResolvedValueOnce("new.csv");
+    renderPage(<BomImportPage api={api({ inspectTabularBom })} pickFile={pickFile} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    expect(await screen.findByText("缺料分析")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("不支持的 BOM 格式");
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    expect(await screen.findByRole("dialog", { name: "字段映射" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "字段映射" })).not.toBeInTheDocument());
+    expect(screen.getByRole("alert")).toHaveTextContent("不支持的 BOM 格式");
+    expect(screen.queryByText("缺料分析")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("BOM备注名")).toHaveValue("old.csv");
+    expect(screen.getByTitle("old.csv")).toBeInTheDocument();
+  });
 });
