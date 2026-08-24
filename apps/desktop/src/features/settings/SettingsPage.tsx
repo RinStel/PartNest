@@ -39,8 +39,8 @@ export function SettingsPage({ api = desktopApi, pickFile = pickBackupFile }: { 
   return <section className="operations-page settings-page" aria-label="设置">
     <section className="settings-group" aria-labelledby="backup-title">
       <h2 id="backup-title">数据与备份</h2>
-      <button type="button" disabled={busy} onClick={() => void create()}>立即备份</button>
-      <button type="button" disabled={busy} onClick={() => void restore()}>选择备份恢复</button>
+      <button className="pn-button pn-button--primary" type="button" disabled={busy} onClick={() => void create()}>立即备份</button>
+      <button className="pn-button pn-button--secondary" type="button" disabled={busy} onClick={() => void restore()}>选择备份恢复</button>
       <p className="settings-risk">恢复会覆盖当前数据。</p>
     </section>
     <section className="settings-group" aria-labelledby="interface-title">

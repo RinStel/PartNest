@@ -71,11 +71,35 @@ describe("WeldingPage", () => {
     expect(screen.getByRole("region", { name: "器件列表" })).toHaveAttribute("data-collapsed", "true");
   });
 
+  it("keeps an empty current side informational and never submits a take", async () => {
+    const topOnlySession = {
+      ...session,
+      normalized: {
+        ...session.normalized,
+        groups: [{ ...session.normalized.groups[0], quantity: 2, designators: ["R1", "R2"], placements: [
+          { designator: "R1", side: "top" as const, component_key: "C1" },
+          { designator: "R2", side: "top" as const, component_key: "C1" },
+        ] }],
+      },
+    };
+    const api = makeApi({ restoreActiveInteractiveBom: vi.fn().mockResolvedValue(topOnlySession) });
+    render(<WeldingPage api={api} />);
+    await screen.findByTitle("交互式 BOM");
+    selectInBom(["R1", "R2"]);
+    await screen.findByText("当前选择：R1, R2");
+
+    fireEvent.click(screen.getByRole("tab", { name: "底层" }));
+    expect(screen.getByText("当前面无器件", { selector: ".welding-empty-side" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /确认取用/ })).not.toBeInTheDocument();
+    expect(api.confirmTake).not.toHaveBeenCalled();
+  });
+
   it("keeps the tray informational and does not inject styles into the BOM frame", async () => {
     const api = makeApi();
     render(<WeldingPage api={api} />);
     const frame = await screen.findByTitle("交互式 BOM");
     const trayRow = screen.getByTestId("tray-row-C1");
+    expect(screen.getByRole("table", { name: "BOM 器件" })).toHaveAttribute("data-scroll-container", "true");
     expect(trayRow.tagName).toBe("DIV");
     fireEvent.click(trayRow);
     expect(api.resolveBomSelection).not.toHaveBeenCalled();

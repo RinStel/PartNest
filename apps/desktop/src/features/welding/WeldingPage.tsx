@@ -86,7 +86,7 @@ export function WeldingPage({ api = desktopApi }: { api?: WeldingApi }) {
   useBomBridge({ frameRef, session, api, onResolved, onError: onBridgeError });
 
   async function confirm(quantity: number) {
-    if (!session || !selection || !selectedGroup || !selectedPart || side === "all") return;
+    if (!session || !selection || !selectedGroup || !selectedPart || side === "all" || selectedDesignators.length === 0) return;
     setBusy(true); setError(""); setNotice("");
     const input: ConfirmTakeInput = {
       session_id: session.session_id,
@@ -116,7 +116,7 @@ export function WeldingPage({ api = desktopApi }: { api?: WeldingApi }) {
     {!session ? <p>暂无活动 BOM</p> : <div className="welding-workspace" data-testid="welding-layout" data-split="65-35">
       <div className="welding-bom bom-canvas-light" data-bom-canvas><BomFrame src={cachedBomUrl(session.cache_path)} frameRef={frameRef} /></div>
       <div className="welding-right">
-        <div className="welding-sides" role="tablist" aria-label="板面"><button type="button" role="tab" aria-selected={side === "top"} onClick={() => setSide("top")}>顶层</button><button type="button" role="tab" aria-selected={side === "bottom"} onClick={() => setSide("bottom")}>底层</button><button type="button" role="tab" aria-selected={side === "all"} onClick={() => setSide("all")}>全部</button></div>
+        <div className="welding-sides" role="tablist" aria-label="板面"><button className={`pn-button ${side === "top" ? "pn-button--primary" : "pn-button--secondary"}`} type="button" role="tab" aria-selected={side === "top"} onClick={() => setSide("top")}>顶层</button><button className={`pn-button ${side === "bottom" ? "pn-button--primary" : "pn-button--secondary"}`} type="button" role="tab" aria-selected={side === "bottom"} onClick={() => setSide("bottom")}>底层</button><button className={`pn-button ${side === "all" ? "pn-button--primary" : "pn-button--secondary"}`} type="button" role="tab" aria-selected={side === "all"} onClick={() => setSide("all")}>全部</button></div>
         {selection && selectedGroup ? <>
           <p>当前选择：{selectedDesignators.join(", ")}</p>
           <TakePanel group={selectedGroup} side={side} designators={selectedDesignators} part={selectedPart} parts={selectableParts} progress={progress} onPartChange={setSelectedPartId} onConfirm={confirm} error={error} busy={busy} />

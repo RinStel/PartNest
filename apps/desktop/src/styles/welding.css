@@ -40,11 +40,14 @@
 
 .welding-sides { display: flex; gap: .25rem; }
 .welding-sides [role="tab"] { flex: 1 1 0; }
+.welding-sides .pn-button { min-width: 0; }
 .welding-status-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+.welding-empty-side { margin: .75rem 0; color: var(--text-muted); }
 
 .component-tray {
   grid-column: 1 / -1;
   min-width: 0;
+  max-height: calc(30px + min(14rem, 28vh));
   overflow: hidden;
   border: 1px solid var(--border);
   background: var(--bg-panel);
@@ -61,7 +64,7 @@
 }
 
 .component-tray__header h3 { margin: 0; color: var(--text); font-size: 12px; }
-.component-tray__table { min-width: 0; overflow: auto; font-size: 12px; }
+.component-tray__table { min-width: 0; max-height: min(14rem, 28vh); overflow: auto; font-size: 12px; }
 .component-tray__row { display: flex; min-width: 28rem; }
 .component-tray__row[data-active="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel)); }
 .component-tray__cell { box-sizing: border-box; flex: 0 0 auto; overflow: hidden; border-bottom: 1px solid var(--border); padding: .3rem .5rem; text-overflow: ellipsis; white-space: nowrap; }

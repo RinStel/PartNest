@@ -47,7 +47,7 @@ export function ComponentTray({ groups, side, activeComponentKey, widths, onResi
       <h3>器件列表</h3>
       <button type="button" className="pn-button pn-button--ghost" aria-expanded={!collapsed} aria-label={collapsed ? "展开器件列表" : "收起器件列表"} onClick={onToggle}>{collapsed ? "展开" : "收起"}</button>
     </header>
-    {!collapsed && <div className="component-tray__table" role="table" aria-label="BOM 器件">
+    {!collapsed && <div className="component-tray__table" role="table" aria-label="BOM 器件" data-scroll-container="true">
       <div className="component-tray__row" role="row">
         {columns.map(([column, label]) => <div className="component-tray__cell component-tray__header-cell" role="columnheader" key={column} data-testid={column === "component" ? "component-column" : undefined} style={{ width: widths[column] }}>
           {label} {resizeButton(column, label)}
