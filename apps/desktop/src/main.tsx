@@ -5,6 +5,7 @@ import "./styles/tokens.css";
 import "./styles/primitives.css";
 import "./styles/shell.css";
 import "./styles/inventory.css";
+import "./styles/welding.css";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

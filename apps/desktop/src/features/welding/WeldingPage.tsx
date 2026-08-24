@@ -3,6 +3,7 @@ import { cachedBomUrl, desktopApi, errorMessage, normalizePart, type BomSide, ty
 import { matchBomGroup } from "../../../../../packages/domain/src/bom/matching";
 import type { InventoryPart } from "../../../../../packages/domain/src/bom/types";
 import { BomFrame } from "./BomFrame";
+import { ComponentTray } from "./ComponentTray";
 import { TakePanel } from "./TakePanel";
 import { useBomBridge } from "./useBomBridge";
 import { useResizableColumns } from "./useResizableColumns";
@@ -20,6 +21,7 @@ export function WeldingPage({ api = desktopApi }: { api?: WeldingApi }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [trayCollapsed, setTrayCollapsed] = useState(false);
   const columns = useResizableColumns({ component: 180, package: 120, quantity: 96, side: 100 });
 
   useEffect(() => {
@@ -110,37 +112,18 @@ export function WeldingPage({ api = desktopApi }: { api?: WeldingApi }) {
     } finally { setBusy(false); }
   }
 
-  const resizeButton = (column: string, label: string) => <button
-    type="button"
-    role="separator"
-    aria-label={`调整${label}列宽`}
-    aria-valuemin={columns.minWidth}
-    aria-valuemax={columns.maxWidth}
-    aria-valuenow={columns.widths[column]}
-    tabIndex={0}
-    onMouseDown={(event) => columns.startResize(column, event)}
-    onKeyDown={(event) => {
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-        event.preventDefault();
-        columns.adjustWidth(column, event.key === "ArrowLeft" ? -8 : 8);
-      }
-    }}
-  >↔</button>;
   return <section aria-label="焊接工作台">
-    {!session ? <p>暂无活动 BOM</p> : <div className="welding-workspace">
-      <div className="welding-bom"><BomFrame src={cachedBomUrl(session.cache_path)} frameRef={frameRef} /></div>
+    {!session ? <p>暂无活动 BOM</p> : <div className="welding-workspace" data-testid="welding-layout" data-split="65-35">
+      <div className="welding-bom bom-canvas-light" data-bom-canvas><BomFrame src={cachedBomUrl(session.cache_path)} frameRef={frameRef} /></div>
       <div className="welding-right">
         <div className="welding-sides" role="tablist" aria-label="板面"><button type="button" role="tab" aria-selected={side === "top"} onClick={() => setSide("top")}>顶层</button><button type="button" role="tab" aria-selected={side === "bottom"} onClick={() => setSide("bottom")}>底层</button><button type="button" role="tab" aria-selected={side === "all"} onClick={() => setSide("all")}>全部</button></div>
         {selection && selectedGroup ? <>
           <p>当前选择：{selectedDesignators.join(", ")}</p>
-          <div className="welding-component-table" role="table" aria-label="器件列表">
-            <div role="row"><div role="columnheader" data-testid="component-column" style={{ width: columns.widths.component }}>器件 {resizeButton("component", "器件")}</div><div role="columnheader" style={{ width: columns.widths.package }}>封装 {resizeButton("package", "封装")}</div><div role="columnheader" style={{ width: columns.widths.quantity }}>数量 {resizeButton("quantity", "数量")}</div><div role="columnheader" style={{ width: columns.widths.side }}>板面 {resizeButton("side", "板面")}</div></div>
-            <div role="row"><div role="cell" data-testid="component-cell" style={{ width: columns.widths.component }}>{selectedGroup.name || selectedGroup.value}</div><div role="cell" style={{ width: columns.widths.package }}>{selectedGroup.package}</div><div role="cell" style={{ width: columns.widths.quantity }}>{selectedDesignators.length}</div><div role="cell" style={{ width: columns.widths.side }}>{side}</div></div>
-          </div>
           <TakePanel group={selectedGroup} side={side} designators={selectedDesignators} part={selectedPart} parts={selectableParts} progress={progress} onPartChange={setSelectedPartId} onConfirm={confirm} error={error} busy={busy} />
           {notice && <p>{notice}</p>}
         </> : <p>请在 BOM 中选择器件</p>}
       </div>
+      <ComponentTray groups={session.normalized.groups} side={side} activeComponentKey={selection?.component_key ?? null} widths={columns.widths} onResizeStart={columns.startResize} onResizeKey={columns.adjustWidth} collapsed={trayCollapsed} onToggle={() => setTrayCollapsed((value) => !value)} />
     </div>}
   </section>;
 }

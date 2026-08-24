@@ -48,6 +48,42 @@ function selectInBom(designators: string[], source?: MessageEventSource | null) 
 }
 
 describe("WeldingPage", () => {
+  it("keeps the light BOM canvas inside the dark 65/35 workspace", async () => {
+    const api = makeApi();
+    render(<WeldingPage api={api} />);
+    const frame = await screen.findByTitle("交互式 BOM");
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    expect(frame.closest("[data-bom-canvas]")).toHaveClass("bom-canvas-light");
+    expect(screen.getByTestId("welding-layout")).toHaveAttribute("data-split", "65-35");
+  });
+
+  it("shows the full BOM in a collapsible tray and highlights the active group", async () => {
+    const extraGroup = { ...session.normalized.groups[0], component_key: "C2", name: "1k", value: "1k", designators: ["R4"], placements: [{ designator: "R4", side: "top", component_key: "C2" }] };
+    const api = makeApi({ restoreActiveInteractiveBom: vi.fn().mockResolvedValue({ ...session, normalized: { ...session.normalized, groups: [...session.normalized.groups, extraGroup] } }) });
+    render(<WeldingPage api={api} />);
+    await screen.findByTitle("交互式 BOM");
+    expect(screen.getByRole("region", { name: "器件列表" })).toBeInTheDocument();
+    expect(screen.getByText("1k")).toBeInTheDocument();
+    selectInBom(["R1", "R2"]);
+    await screen.findByText("当前选择：R1, R2");
+    expect(screen.getByTestId("tray-row-C1")).toHaveAttribute("data-active", "true");
+    fireEvent.click(screen.getByRole("button", { name: "收起器件列表" }));
+    expect(screen.getByRole("region", { name: "器件列表" })).toHaveAttribute("data-collapsed", "true");
+  });
+
+  it("keeps the tray informational and does not inject styles into the BOM frame", async () => {
+    const api = makeApi();
+    render(<WeldingPage api={api} />);
+    const frame = await screen.findByTitle("交互式 BOM");
+    const trayRow = screen.getByTestId("tray-row-C1");
+    expect(trayRow.tagName).toBe("DIV");
+    fireEvent.click(trayRow);
+    expect(api.resolveBomSelection).not.toHaveBeenCalled();
+    expect(frame).not.toHaveAttribute("srcdoc");
+    expect(frame).not.toHaveAttribute("style");
+    expect(frame.children).toHaveLength(0);
+  });
+
   it("resolves a BOM selection without confirming or mutating stock", async () => {
     const api = makeApi();
     render(<WeldingPage api={api} />);

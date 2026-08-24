@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { BomGroup, BomSide, Part, WeldingProgress } from "../../app/tauri";
+import { StatusBadge, type StatusTone } from "../../components/ui/StatusBadge";
 
 export function TakePanel({
   group,
@@ -29,15 +30,18 @@ export function TakePanel({
 
   useEffect(() => {
     setQuantity(String(Math.max(1, bomQuantity)));
-  }, [bomQuantity, side]);
+  }, [bomQuantity, group.component_key, side]);
 
   const status = (value: BomSide) => progress.find((item) => item.component_key === group.component_key && item.side === value)?.status ?? "pending";
+  const statusLabel = (value: string) => value === "taken" ? "已取用" : value === "partial" ? "部分取用" : "待取用";
+  const statusTone = (value: string): StatusTone => value === "taken" ? "success" : value === "partial" ? "warning" : "neutral";
   if (side === "all") {
-    return <section aria-label="取用面板"><h3>取用</h3><p>顶层：{status("top") === "taken" ? "已取用" : status("top") === "partial" ? "部分取用" : "待取用"}</p><p>底层：{status("bottom") === "taken" ? "已取用" : status("bottom") === "partial" ? "部分取用" : "待取用"}</p></section>;
+    return <section aria-label="取用面板"><h3>取用</h3><p><span className="welding-status-label">顶层：{statusLabel(status("top"))}</span><StatusBadge tone={statusTone(status("top"))}>顶层 · {statusLabel(status("top"))}</StatusBadge></p><p><span className="welding-status-label">底层：{statusLabel(status("bottom"))}</span><StatusBadge tone={statusTone(status("bottom"))}>底层 · {statusLabel(status("bottom"))}</StatusBadge></p></section>;
   }
 
   return <section aria-label="取用面板">
     <h3>取用</h3>
+    <p><span className="welding-status-label">板面：{side === "top" ? "顶层" : "底层"} · {statusLabel(status(side))}</span><StatusBadge tone={statusTone(status(side))}>{side === "top" ? "顶层" : "底层"} · {statusLabel(status(side))}</StatusBadge></p>
     <dl>
       <div><dt>器件</dt><dd>{group.name || group.value}</dd></div>
       <div><dt>盒位</dt><dd>{part?.box_id && part.slot ? `${part.box_id}/${part.slot}` : "—"}</dd></div>

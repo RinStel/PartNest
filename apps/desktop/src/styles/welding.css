@@ -1,0 +1,76 @@
+.welding-workspace {
+  box-sizing: border-box;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(0, 13fr) minmax(19rem, 7fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: .625rem;
+}
+
+.welding-bom {
+  min-width: 0;
+  min-height: 24rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.bom-canvas-light {
+  background: #f6f7f8;
+  border-color: var(--border);
+}
+
+.welding-bom iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 24rem;
+  border: 0;
+  background: #f6f7f8;
+}
+
+.welding-right {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: .5rem;
+  overflow: auto;
+}
+
+.welding-sides { display: flex; gap: .25rem; }
+.welding-sides [role="tab"] { flex: 1 1 0; }
+.welding-status-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+
+.component-tray {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.component-tray__header {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  border-bottom: 1px solid var(--border);
+  padding: 0 .5rem;
+}
+
+.component-tray__header h3 { margin: 0; color: var(--text); font-size: 12px; }
+.component-tray__table { min-width: 0; overflow: auto; font-size: 12px; }
+.component-tray__row { display: flex; min-width: 28rem; }
+.component-tray__row[data-active="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel)); }
+.component-tray__cell { box-sizing: border-box; flex: 0 0 auto; overflow: hidden; border-bottom: 1px solid var(--border); padding: .3rem .5rem; text-overflow: ellipsis; white-space: nowrap; }
+.component-tray__header-cell { color: var(--text-muted); font-weight: 600; background: var(--bg-raised); }
+.component-tray__cell [role="separator"] { cursor: col-resize; padding: 0 .15rem; border: 0; background: transparent; color: var(--text-muted); }
+.component-tray__empty { margin: .5rem; color: var(--text-muted); }
+
+@media (max-width: 900px) {
+  .welding-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(20rem, 1fr) auto auto; }
+  .welding-right { grid-row: 2; }
+  .component-tray { grid-row: 3; }
+}

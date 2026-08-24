@@ -4,13 +4,3 @@
 
 :root { font-family: system-ui, sans-serif; color: var(--text); background: var(--bg-app); }
 body { margin: 0; min-width: 0; color: var(--text); background: var(--bg-app); font-size: 13px; }
-.welding-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(22rem, 34rem); gap: 1rem; min-height: 70vh; }
-.welding-bom { min-height: 30rem; background: var(--bg-panel); border: 1px solid var(--border); }
-.welding-bom iframe { display: block; width: 100%; height: 100%; min-height: 30rem; border: 0; }
-.welding-right { display: flex; flex-direction: column; gap: .75rem; }
-.welding-sides { display: flex; gap: .5rem; }
-.welding-component-table { overflow: auto; background: var(--bg-panel); border: 1px solid var(--border); }
-.welding-component-table [role="row"] { display: flex; min-width: 30rem; }
-.welding-component-table [role="columnheader"], .welding-component-table [role="cell"] { box-sizing: border-box; flex: 0 0 auto; padding: .5rem; border-bottom: 1px solid var(--border); }
-.welding-component-table [role="columnheader"] { font-weight: 600; }
-.welding-component-table [role="separator"] { cursor: col-resize; padding: 0 .15rem; border: 0; background: transparent; }
