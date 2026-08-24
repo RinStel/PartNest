@@ -12,6 +12,7 @@ const WELDING_MOVEMENT_METADATA_MIGRATION: &str =
     include_str!("../../migrations/0002_welding_movement_metadata.sql");
 const MOVEMENT_AUDIT_AND_ACTIVE_SESSION_MIGRATION: &str =
     include_str!("../../migrations/0003_movement_audit_and_active_session.sql");
+const LCSC_CACHE_MIGRATION: &str = include_str!("../../migrations/0004_lcsc_cache.sql");
 
 /// A versioned SQL migration. Migrations are applied in one exclusive transaction.
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +46,10 @@ impl Database {
             Migration {
                 version: 3,
                 sql: MOVEMENT_AUDIT_AND_ACTIVE_SESSION_MIGRATION,
+            },
+            Migration {
+                version: 4,
+                sql: LCSC_CACHE_MIGRATION,
             },
         ])?;
         Ok(database)

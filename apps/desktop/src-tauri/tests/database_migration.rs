@@ -91,6 +91,32 @@ fn migration_enforces_side_and_lcsc_constraints() {
 }
 
 #[test]
+fn migration_creates_lcsc_cache_without_changing_inventory_records() {
+    let db = test_database();
+    db.connection()
+        .execute(
+            "INSERT INTO lcsc_cache (lcsc_code, name, category, package, manufacturer, mpn, fetched_at) VALUES ('C25804', '100k', '电阻', '0402', 'UNI-ROYAL', '0402WGF1003TEE', '2026-08-24T00:00:00Z')",
+            [],
+        )
+        .expect("cache table accepts a lookup record");
+    let stored: String = db
+        .connection()
+        .query_row(
+            "SELECT mpn FROM lcsc_cache WHERE lcsc_code = 'C25804'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, "0402WGF1003TEE");
+    assert_eq!(
+        db.connection()
+            .query_row::<i64, _, _>("SELECT COUNT(*) FROM parts", [], |row| row.get(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn migration_enforces_progress_uniqueness_and_quantity_bounds() {
     let db = test_database();
     insert_box(&db, "box-1");

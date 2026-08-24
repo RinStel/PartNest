@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::Builder;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 pub const MAX_BACKUPS: usize = 10;
 pub const STARTUP_BACKUP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -201,6 +201,19 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
         return Err(BackupError::Invalid("parts 约束不完整".into()));
     }
     require_index(connection, "parts", "parts_lcsc_code_unique")?;
+    require_table(
+        connection,
+        "lcsc_cache",
+        &[
+            "lcsc_code",
+            "name",
+            "category",
+            "package",
+            "manufacturer",
+            "mpn",
+            "fetched_at",
+        ],
+    )?;
 
     require_table(
         connection,

@@ -59,6 +59,23 @@ fn create_part_normalizes_slot_and_rejects_out_of_range_positions() {
 }
 
 #[test]
+fn create_part_accepts_a_trimmed_box_identifier() {
+    let db = database();
+    let box_record = create_box_service(
+        &db,
+        BoxInput {
+            name: "Trim box".into(),
+            rows: 2,
+            cols: 2,
+        },
+    )
+    .unwrap();
+    let part =
+        create_part_service(&db, part_input(&format!("  {}  ", box_record.id), "A0", 1)).unwrap();
+    assert_eq!(part.box_id, box_record.id);
+}
+
+#[test]
 fn box_rejects_more_than_one_hundred_columns() {
     let db = database();
     assert!(create_box_service(&db, box_input(2, 101)).is_err());

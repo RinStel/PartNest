@@ -58,7 +58,7 @@ fn validate_input(
         .connection()
         .query_row(
             "SELECT rows, cols FROM boxes WHERE id = ?1",
-            [&input.box_id],
+            [input.box_id.trim()],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()?
@@ -66,7 +66,7 @@ fn validate_input(
         return Err(CommandError::NotFound("收纳盒不存在".into()));
     };
     let slot = normalize_slot(&input.slot, rows, cols)?;
-    Ok((name, input.box_id.clone(), slot))
+    Ok((name, input.box_id.trim().to_string(), slot))
 }
 
 fn read_part(db: &Database, id: &str) -> Result<PartView, CommandError> {

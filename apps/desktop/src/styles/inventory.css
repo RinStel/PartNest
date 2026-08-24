@@ -16,6 +16,11 @@
 .inventory-adjust { display: inline-flex; align-items: center; gap: .25rem; }
 .inventory-adjust .pn-control { width: 4.5rem; }
 .inventory-actions { display: flex; align-items: center; gap: .25rem; }
+.part-lcsc-field, .part-slot-field { display: flex; gap: .375rem; }
+.part-lcsc-field .pn-control, .part-slot-field .pn-control { min-width: 0; flex: 1; }
+.part-slot-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .25rem; max-height: 11.25rem; margin-top: .375rem; overflow: auto; padding: .375rem; border: 1px solid var(--border); border-radius: 3px; background: var(--bg-raised); }
+.part-slot-picker__slot { min-width: 0; min-height: 28px; border: 1px solid var(--border); border-radius: 3px; color: var(--text); background: var(--bg-app); font-size: 11px; }
+.part-slot-picker__slot:disabled { color: var(--text-muted); opacity: .55; }
 .boxes-page { display: grid; min-width: 0; grid-template-columns: clamp(12rem, 22vw, 18rem) minmax(0, 1fr); gap: .75rem; }
 .boxes-list { display: flex; min-width: 0; flex-direction: column; gap: .25rem; border: 1px solid var(--border); background: var(--bg-panel); padding: .375rem; }
 .boxes-list__item { display: flex; min-height: 30px; align-items: center; justify-content: space-between; gap: .5rem; border: 1px solid transparent; border-radius: 3px; padding: 0 .5rem; color: var(--text-muted); background: transparent; font: inherit; text-align: left; cursor: pointer; }

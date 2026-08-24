@@ -39,6 +39,7 @@ pub fn run() {
             commands::parts::update_part,
             commands::parts::adjust_stock,
             commands::parts::delete_part,
+            commands::lcsc::lookup_lcsc,
             commands::movements::list_movements,
             commands::settings::create_backup,
             commands::settings::restore_backup,
