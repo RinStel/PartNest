@@ -135,6 +135,39 @@ pub fn inspect_tabular_bom(
     )?))
 }
 
+/// Parse a tabular BOM when its headers can be resolved without user input.
+/// Interactive-BOM companion files use this strict path because they must be
+/// validated against the selected HTML before a cache session is created.
+pub fn parse_tabular_bom(
+    path: impl AsRef<Path>,
+    mapping: Option<&FieldMapping>,
+) -> Result<NormalizedBomDto, TabularError> {
+    let path = path.as_ref();
+    let table = if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("xlsx"))
+        .unwrap_or(false)
+    {
+        read_xlsx(path)?
+    } else {
+        read_csv(path)?
+    };
+    let (resolved, ambiguous) = resolve_mapping(&table.headers, mapping);
+    if ambiguous || !has_required_mapping(&resolved) {
+        return Err(TabularError::InvalidRecord {
+            row: 1,
+            reason: "field mapping is required".into(),
+        });
+    }
+    let source_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    normalize_table(source_name, table, &resolved)
+}
+
 fn read_csv(path: &Path) -> Result<Table, TabularError> {
     let bytes = fs::read(path)?;
     let text = decode_text(&bytes)?;

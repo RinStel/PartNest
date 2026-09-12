@@ -1,8 +1,8 @@
 use partnest_desktop_lib::bom::bridge::{decode_selection_message, BridgeError};
 use partnest_desktop_lib::bom::interactive_html::{parse_interactive_html, InteractiveHtmlError};
-use partnest_desktop_lib::bom::types::BomSide;
-use std::fs;
+use partnest_desktop_lib::bom::types::{BomGroupDto, BomPlacementDto, BomSide, NormalizedBomDto};
 use std::path::{Path, PathBuf};
+use std::{collections::BTreeMap, fs};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -74,6 +74,148 @@ fn scanner_ignores_decoys_comments_and_all_javascript_string_forms() {
 }
 
 #[test]
+fn scanner_survives_markup_quotes_and_unterminated_attributes_before_the_data_script() {
+    // Real exports surround the bundle with prose, comments, and markup. A quote
+    // that has no partner must never abort the scan, because the assignment it
+    // hides is the only way to read the BOM at all.
+    const BODY: &str = r#""bom_merge": {"data": {"comp_info": {"C1": {"Name": "x"}}, "designator_info": {"top": [{"des": "R1", "lc_code": "C1"}], "bottom": []}}}"#;
+    for markup in [
+        r#"<html><body><p>It's a board</p>"#,
+        r#"<html><body><p>It's a "board", don't touch</p>"#,
+        r#"<html><!-- don't --><body>"#,
+        r#"<html><body><div title='unclosed>"#,
+        r#"<html><body><script>var re = /a"b/g;</script>"#,
+    ] {
+        let source = format!("{markup}<script>window.files = {{{BODY}}};</script></body></html>");
+        let bom = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
+            &source, "markup",
+        )
+        .unwrap_or_else(|error| panic!("{markup} must still parse: {error}"));
+        assert_eq!(bom.groups[0].designators, ["R1"], "markup: {markup}");
+    }
+}
+
+#[test]
+fn scanner_keeps_comment_and_brace_like_text_inside_string_values() {
+    // Real exports put URLs, comment-looking prose and braces inside field
+    // values. Stripping them as syntax would corrupt the document instead of
+    // cleaning it, so string content must survive both the scan and the strip.
+    let source = r#"
+      window.files = {
+        "bom_merge": {"data": {
+          "comp_info": {"C1": {"Name": "10k", "note": "https://example.com/a//b /* x */ {y} don't"}},
+          "designator_info": {"top": [{"des": "R1", "lc_code": "C1"}], "bottom": []}
+        }}
+      };
+    "#;
+    let bom = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
+        source,
+        "strings-in-values",
+    )
+    .unwrap_or_else(|error| panic!("string values must survive scanning: {error}"));
+    assert_eq!(bom.groups[0].designators, ["R1"]);
+}
+
+#[test]
+fn scanner_rejects_candidates_without_bom_merge_and_documents_a_missing_assignment() {
+    let decoy =
+        r#"<html><body><script>var decoy = window.files = {"bad": true};</script></body></html>"#;
+    let error = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
+        decoy,
+        "decoy-only",
+    )
+    .expect_err("an object without bom_merge is not a BOM");
+    assert!(error.to_string().contains("no bom_merge section"));
+
+    let empty = "<html><body><p>nothing here</p></body></html>";
+    let error = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
+        empty,
+        "no-assignment",
+    )
+    .expect_err("a document without the assignment cannot be read");
+    assert!(error.to_string().contains("window.files object is missing"));
+}
+
+#[test]
+fn derives_component_key_from_a_unique_component_name_when_lc_code_is_absent() {
+    let source = r#"
+      window.files = {
+        "bom_merge": {"data": {
+          "comp_info": {"manual-m3": {"Name": "M3", "value": "", "Supplier Footprint": "Hole"}},
+          "designator_info": {"top": [{"des": "H1", "cm": "M3"}], "bottom": []}
+        }}
+      };
+    "#;
+    let bom = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
+        source,
+        "no-lc-code",
+    )
+    .expect("derive component key");
+    assert_eq!(bom.groups.len(), 1);
+    assert_eq!(bom.groups[0].component_key, "manual-m3");
+    assert_eq!(bom.groups[0].designators, ["H1"]);
+}
+
+#[test]
+fn rejects_ambiguous_component_name_without_lc_code() {
+    let source = r#"
+      window.files = {
+        "bom_merge": {"data": {
+          "comp_info": {
+            "r0603": {"Name": "10k", "value": "10k"},
+            "r0805": {"Name": "10k", "value": "10k"}
+          },
+          "designator_info": {"top": [{"des": "R1", "cm": "10k"}], "bottom": []}
+        }}
+      };
+    "#;
+    let error = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
+        source,
+        "ambiguous-no-lc-code",
+    )
+    .expect_err("ambiguous component must not be guessed");
+    assert!(error.to_string().contains("ambiguous component key"));
+}
+
+#[test]
+fn companion_csv_metadata_completes_html_entries_with_empty_lc_code() {
+    let source = r#"
+      window.files = {
+        "bom_merge": {"data": {
+          "comp_info": {"C1": {"Name": "10k", "value": "10k"}},
+          "designator_info": {"top": [
+            {"des": "R1", "lc_code": "C1"},
+            {"des": "U1", "lc_code": "", "cm": "GD32F303CCT6"}
+          ], "bottom": []}
+        }}
+      };
+    "#;
+    let companion = NormalizedBomDto {
+        source_name: "board.csv".into(),
+        groups: vec![
+            companion_group("lcsc:C1", "R1", "10k", "", ""),
+            companion_group("lcsc:C116151", "U1", "GD32F303CCT6", "LQFP-48", "C116151"),
+        ],
+    };
+    let bom =
+        partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text_with_companion(
+            source,
+            "board.html",
+            Some(&companion),
+        )
+        .expect("combine companion CSV");
+    let group = bom
+        .groups
+        .iter()
+        .find(|group| group.component_key == "lcsc:C116151")
+        .expect("CSV-backed group");
+    assert_eq!(group.name, "GD32F303CCT6");
+    assert_eq!(group.package, "LQFP-48");
+    assert_eq!(group.lcsc_code, "C116151");
+    assert_eq!(group.placements[0].side, Some(BomSide::Top));
+}
+
+#[test]
 fn bridge_rejects_oversized_messages_and_designators() {
     let many = (0..513)
         .map(|i| format!("\"R{i}\""))
@@ -113,4 +255,30 @@ fn bridge_rejects_oversized_messages_and_designators() {
 fn sha256(path: &Path) -> String {
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(fs::read(path).unwrap()))
+}
+
+fn companion_group(
+    component_key: &str,
+    designator: &str,
+    name: &str,
+    package: &str,
+    lcsc_code: &str,
+) -> BomGroupDto {
+    BomGroupDto {
+        component_key: component_key.into(),
+        name: name.into(),
+        value: String::new(),
+        package: package.into(),
+        manufacturer: String::new(),
+        mpn: name.into(),
+        lcsc_code: lcsc_code.into(),
+        quantity: 1,
+        designators: vec![designator.into()],
+        placements: vec![BomPlacementDto {
+            designator: designator.into(),
+            side: None,
+            component_key: component_key.into(),
+        }],
+        extra_fields: BTreeMap::new(),
+    }
 }

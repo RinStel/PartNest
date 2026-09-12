@@ -3,7 +3,8 @@
 use chrono::Utc;
 use uuid::Uuid;
 
-/// IDs are stored as canonical UUIDv7 strings so their lexical order follows creation time.
+/// Part and audit IDs are stored as canonical UUIDv7 strings. Box IDs are
+/// assigned by SQLite because they are local relational keys.
 pub fn new_id() -> String {
     Uuid::now_v7().to_string()
 }
@@ -15,7 +16,7 @@ pub fn utc_now() -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoxRecord {
-    pub id: String,
+    pub id: i64,
     pub name: String,
     pub rows: i64,
     pub cols: i64,
@@ -24,7 +25,10 @@ pub struct BoxRecord {
 impl BoxRecord {
     pub fn new(name: String, rows: i64, cols: i64) -> Self {
         Self {
-            id: new_id(),
+            // Database-backed box IDs are assigned by SQLite. The constructor
+            // remains useful for value-level tests and uses zero as an
+            // unsaved sentinel.
+            id: 0,
             name,
             rows,
             cols,
@@ -42,14 +46,14 @@ pub struct PartRecord {
     pub mpn: Option<String>,
     pub lcsc_code: Option<String>,
     pub quantity: i64,
-    pub box_id: String,
-    pub slot: String,
+    pub box_id: Option<i64>,
+    pub slot: Option<String>,
     pub note: Option<String>,
     pub version: i64,
 }
 
 impl PartRecord {
-    pub fn new(name: String, box_id: String, slot: String, quantity: i64) -> Self {
+    pub fn new(name: String, box_id: Option<i64>, slot: Option<String>, quantity: i64) -> Self {
         Self {
             id: new_id(),
             name,

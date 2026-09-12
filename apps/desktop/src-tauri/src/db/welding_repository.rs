@@ -44,6 +44,9 @@ pub struct WeldingProgress {
     pub required_quantity: i64,
     pub consumed_quantity: i64,
     pub taken_quantity: i64,
+    /// Designators already consumed for this side. The welding workspace uses it
+    /// to show what is done and to avoid re-charging the same designator.
+    pub confirmed_designators: Vec<String>,
     pub status: String,
 }
 
@@ -70,6 +73,32 @@ fn status(consumed: i64, required: i64) -> &'static str {
     } else {
         "partial"
     }
+}
+
+fn parse_designators(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn designators_json(designators: &[String]) -> Result<String, CommandError> {
+    serde_json::to_string(designators)
+        .map_err(|error| CommandError::Validation(format!("位号无法记录: {error}")))
+}
+
+/// Union of two designator sets, sorted so the stored JSON is deterministic.
+fn merged_designators(mut kept: Vec<String>, added: &[String]) -> Vec<String> {
+    kept.extend(added.iter().cloned());
+    kept.sort();
+    kept.dedup();
+    kept
+}
+
+fn without_designators(mut kept: Vec<String>, removed: &[String]) -> Vec<String> {
+    for value in removed {
+        kept.retain(|existing| existing != value);
+    }
+    kept.sort();
+    kept.dedup();
+    kept
 }
 
 fn next_movement_sequence(transaction: &Transaction<'_>) -> Result<i64, CommandError> {
@@ -185,29 +214,43 @@ pub fn confirm_take(db: &Database, input: ConfirmTakeInput) -> Result<TakeResult
         .checked_add(1)
         .ok_or_else(|| CommandError::Validation("器件版本超出范围".into()))?;
     let sequence = next_movement_sequence(&tx)?;
-    let confirmation_designators = serde_json::to_string(&input.designators)
-        .map_err(|error| CommandError::Validation(format!("位号无法记录: {error}")))?;
 
     let existing = tx
         .query_row(
-            "SELECT part_id, required_quantity, taken_quantity FROM welding_progress WHERE session_id = ?1 AND component_key = ?2 AND side = ?3",
+            "SELECT part_id, required_quantity, taken_quantity, confirmed_designators FROM welding_progress WHERE session_id = ?1 AND component_key = ?2 AND side = ?3",
             params![input.session_id, input.component_key, side],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?)),
         )
         .optional()?;
-    if let Some((Some(existing_part), _, _)) = &existing {
+    if let Some((Some(existing_part), _, _, _)) = &existing {
         if existing_part != &input.part_id {
             return Err(CommandError::Conflict);
         }
     }
-    let (required, previous_consumed) = existing
-        .map(|(_, required, consumed)| (required, consumed))
-        .unwrap_or((input.bom_quantity, 0));
-    let required = required.max(input.bom_quantity).max(
-        previous_consumed
-            .checked_add(input.take_quantity)
-            .ok_or_else(|| CommandError::Validation("焊接数量超出范围".into()))?,
-    );
+    let (existing_required, previous_consumed, confirmed) = existing
+        .map(|(_, required, consumed, confirmed)| {
+            (required, consumed, parse_designators(&confirmed))
+        })
+        .unwrap_or((input.bom_quantity, 0, Vec::new()));
+    // A designator may only be charged once per session and side, otherwise the
+    // audit trail claims the same placement was consumed twice. Re-selecting an
+    // already taken placement is allowed as long as something new is charged.
+    let fresh: Vec<String> = input
+        .designators
+        .iter()
+        .filter(|designator| !confirmed.contains(*designator))
+        .cloned()
+        .collect();
+    if fresh.is_empty() {
+        return Err(CommandError::Validation(
+            "当前板面所选位号均已取用，如需追加请重新选择位号，如需纠正请撤销取用流水".into(),
+        ));
+    }
+    let confirmation_designators = designators_json(&fresh)?;
+    // Selecting a wider subset later must raise the requirement; the first
+    // selection can never permanently understate what the board side needs.
+    let required = existing_required.max(input.bom_quantity);
+    let confirmed = merged_designators(confirmed, &fresh);
     let consumed = previous_consumed
         .checked_add(input.take_quantity)
         .ok_or_else(|| CommandError::Validation("焊接数量超出范围".into()))?;
@@ -221,9 +264,10 @@ pub fn confirm_take(db: &Database, input: ConfirmTakeInput) -> Result<TakeResult
         "INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side, before_quantity, after_quantity, movement_sequence, bom_quantity, confirmation_designators) VALUES (?1, ?2, ?3, 'consume', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![movement_id, input.part_id, input.session_id, -input.take_quantity, "welding take", input.component_key, side, quantity, remaining, sequence, input.bom_quantity, confirmation_designators],
     )?;
+    let confirmed_json = designators_json(&confirmed)?;
     tx.execute(
-        "INSERT INTO welding_progress (id, session_id, component_key, side, part_id, required_quantity, taken_quantity, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(session_id, component_key, side) DO UPDATE SET part_id = excluded.part_id, required_quantity = excluded.required_quantity, taken_quantity = excluded.taken_quantity, updated_at = excluded.updated_at",
-        params![new_id(), input.session_id, input.component_key, side, input.part_id, required, consumed, utc_now()],
+        "INSERT INTO welding_progress (id, session_id, component_key, side, part_id, required_quantity, taken_quantity, confirmed_designators, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(session_id, component_key, side) DO UPDATE SET part_id = excluded.part_id, required_quantity = excluded.required_quantity, taken_quantity = excluded.taken_quantity, confirmed_designators = excluded.confirmed_designators, updated_at = excluded.updated_at",
+        params![new_id(), input.session_id, input.component_key, side, input.part_id, required, consumed, confirmed_json, utc_now()],
     )?;
     tx.execute(
         "UPDATE welding_sessions SET updated_at = ?1 WHERE id = ?2",
@@ -308,11 +352,11 @@ pub fn reverse_take(db: &Database, movement_id: &str) -> Result<TakeResult, Comm
         "INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, reverses_movement_id, component_key, side, before_quantity, after_quantity, movement_sequence, bom_quantity, confirmation_designators) VALUES (?1, ?2, ?3, 'reverse', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![reversal_id, part_id, session_id, restore, "welding take reversal", movement_id, component_key, side, stock, next_stock, sequence, bom_quantity, confirmation_designators],
     )?;
-    let (required, part): (i64, Option<String>) = tx
+    let (required, part, confirmed): (i64, Option<String>, String) = tx
         .query_row(
-            "SELECT required_quantity, part_id FROM welding_progress WHERE session_id = ?1 AND component_key = ?2 AND side = ?3",
+            "SELECT required_quantity, part_id, confirmed_designators FROM welding_progress WHERE session_id = ?1 AND component_key = ?2 AND side = ?3",
             params![session_id, component_key, side],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
         .ok_or_else(|| CommandError::NotFound("焊接进度不存在".into()))?;
@@ -320,9 +364,19 @@ pub fn reverse_take(db: &Database, movement_id: &str) -> Result<TakeResult, Comm
         "SELECT COALESCE(-SUM(quantity), 0) FROM inventory_movements WHERE session_id = ?1 AND component_key = ?2 AND side = ?3",
         params![session_id, component_key, side], |row| row.get(0))?;
     let consumed = net.max(0);
+    // Releasing the take must also release its designators, otherwise the
+    // restored stock could never be charged for those placements again.
+    let released: Vec<String> = confirmation_designators
+        .as_deref()
+        .map(parse_designators)
+        .unwrap_or_default();
+    let confirmed = designators_json(&without_designators(
+        parse_designators(&confirmed),
+        &released,
+    ))?;
     tx.execute(
-        "UPDATE welding_progress SET taken_quantity = ?1, updated_at = ?2 WHERE session_id = ?3 AND component_key = ?4 AND side = ?5",
-        params![consumed, utc_now(), session_id, component_key, side],
+        "UPDATE welding_progress SET taken_quantity = ?1, confirmed_designators = ?2, updated_at = ?3 WHERE session_id = ?4 AND component_key = ?5 AND side = ?6",
+        params![consumed, confirmed, utc_now(), session_id, component_key, side],
     )?;
     tx.execute(
         "UPDATE welding_sessions SET updated_at = ?1 WHERE id = ?2",
@@ -353,7 +407,7 @@ pub fn get_welding_progress(
         return Err(CommandError::Validation("焊接会话不能为空".into()));
     }
     let mut statement = db.connection().prepare(
-        "SELECT session_id, component_key, side, part_id, required_quantity, taken_quantity FROM welding_progress WHERE session_id = ?1 ORDER BY component_key, side",
+        "SELECT session_id, component_key, side, part_id, required_quantity, taken_quantity, confirmed_designators FROM welding_progress WHERE session_id = ?1 ORDER BY component_key, side",
     )?;
     let rows = statement.query_map([session_id], |row| {
         let side: String = row.get(2)?;
@@ -366,11 +420,12 @@ pub fn get_welding_progress(
             row.get::<_, Option<String>>(3)?,
             required,
             consumed,
+            row.get::<_, String>(6)?,
         ))
     })?;
     let mut result = Vec::new();
     for row in rows {
-        let (session_id, component_key, side, part_id, required, consumed) = row?;
+        let (session_id, component_key, side, part_id, required, consumed, confirmed) = row?;
         result.push(WeldingProgress {
             session_id,
             component_key,
@@ -379,6 +434,7 @@ pub fn get_welding_progress(
             required_quantity: required,
             consumed_quantity: consumed,
             taken_quantity: consumed,
+            confirmed_designators: parse_designators(&confirmed),
             status: status(consumed, required).into(),
         });
     }

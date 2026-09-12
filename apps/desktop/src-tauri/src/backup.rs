@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::Builder;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 8;
 pub const MAX_BACKUPS: usize = 10;
 pub const STARTUP_BACKUP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -167,7 +167,7 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
         "boxes",
         &["id", "name", "rows", "cols", "created_at", "updated_at"],
     )?;
-    if !boxes_sql.contains("primarykey")
+    if !boxes_sql.contains("integerprimarykeyautoincrement")
         || !boxes_sql.contains("check(rows>0)")
         || !boxes_sql.contains("check(cols>0)")
     {
@@ -196,7 +196,9 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
     if !parts_sql.contains("primarykey")
         || !parts_sql.contains("check(quantity>=0)")
         || !parts_sql.contains("unique(box_id,slot)")
-        || !parts_sql.contains("foreignkey(box_id)referencesboxes(id)")
+        || !parts_sql.contains("foreignkey(box_id)references")
+        || !parts_sql.contains("box_idisnull")
+        || !parts_sql.contains("slotisnull")
     {
         return Err(BackupError::Invalid("parts 约束不完整".into()));
     }
@@ -243,6 +245,7 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
             "part_id",
             "required_quantity",
             "taken_quantity",
+            "confirmed_designators",
             "updated_at",
         ],
     )?;
@@ -253,7 +256,7 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
     )?;
     if !progress_sql.contains("check(sidein('top','bottom'))")
         || !progress_sql.contains("check(required_quantity>=0)")
-        || !progress_sql.contains("check(taken_quantity>=0andtaken_quantity<=required_quantity)")
+        || !progress_sql.contains("check(taken_quantity>=0)")
         || !progress_sql.contains("unique(session_id,component_key,side)")
     {
         return Err(BackupError::Invalid("welding_progress 约束不完整".into()));

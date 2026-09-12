@@ -13,6 +13,52 @@ const WELDING_MOVEMENT_METADATA_MIGRATION: &str =
 const MOVEMENT_AUDIT_AND_ACTIVE_SESSION_MIGRATION: &str =
     include_str!("../../migrations/0003_movement_audit_and_active_session.sql");
 const LCSC_CACHE_MIGRATION: &str = include_str!("../../migrations/0004_lcsc_cache.sql");
+const ALLOW_OVERCONSUMPTION_MIGRATION: &str =
+    include_str!("../../migrations/0005_allow_overconsumption.sql");
+const NORMALIZE_LCSC_MIGRATION: &str =
+    include_str!("../../migrations/0006_normalize_lcsc_codes.sql");
+const INTEGER_BOX_IDS_MIGRATION: &str = include_str!("../../migrations/0007_integer_box_ids.sql");
+const CONFIRMED_DESIGNATORS_MIGRATION: &str =
+    include_str!("../../migrations/0008_welding_confirmed_designators.sql");
+
+/// The complete, ordered migration set used by every database open. Keeping it
+/// in one place lets tests compare it against the migration files on disk.
+pub fn migrations() -> Vec<Migration<'static>> {
+    vec![
+        Migration {
+            version: 1,
+            sql: INITIAL_MIGRATION,
+        },
+        Migration {
+            version: 2,
+            sql: WELDING_MOVEMENT_METADATA_MIGRATION,
+        },
+        Migration {
+            version: 3,
+            sql: MOVEMENT_AUDIT_AND_ACTIVE_SESSION_MIGRATION,
+        },
+        Migration {
+            version: 4,
+            sql: LCSC_CACHE_MIGRATION,
+        },
+        Migration {
+            version: 5,
+            sql: ALLOW_OVERCONSUMPTION_MIGRATION,
+        },
+        Migration {
+            version: 6,
+            sql: NORMALIZE_LCSC_MIGRATION,
+        },
+        Migration {
+            version: 7,
+            sql: INTEGER_BOX_IDS_MIGRATION,
+        },
+        Migration {
+            version: 8,
+            sql: CONFIRMED_DESIGNATORS_MIGRATION,
+        },
+    ]
+}
 
 /// A versioned SQL migration. Migrations are applied in one exclusive transaction.
 #[derive(Debug, Clone, Copy)]
@@ -34,24 +80,7 @@ impl Database {
         let connection = Connection::open(&path)?;
         let mut database = Self { connection, path };
         database.configure()?;
-        database.apply_migrations(&[
-            Migration {
-                version: 1,
-                sql: INITIAL_MIGRATION,
-            },
-            Migration {
-                version: 2,
-                sql: WELDING_MOVEMENT_METADATA_MIGRATION,
-            },
-            Migration {
-                version: 3,
-                sql: MOVEMENT_AUDIT_AND_ACTIVE_SESSION_MIGRATION,
-            },
-            Migration {
-                version: 4,
-                sql: LCSC_CACHE_MIGRATION,
-            },
-        ])?;
+        database.apply_migrations(&migrations())?;
         Ok(database)
     }
 

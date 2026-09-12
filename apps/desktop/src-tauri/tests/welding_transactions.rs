@@ -6,6 +6,7 @@ use partnest_desktop_lib::commands::welding::{
     confirm_take_authorized_service, confirm_take_service, get_welding_progress_service,
     reverse_take_service, ConfirmTakeInput,
 };
+use partnest_desktop_lib::commands::CommandError;
 use partnest_desktop_lib::db::{new_id, Database, Migration};
 
 fn database() -> Database {
@@ -34,8 +35,8 @@ fn fixture() -> (Database, String, String) {
             mpn: "R-10K".into(),
             lcsc_code: "C123".into(),
             quantity: 10,
-            box_id: box_record.id,
-            slot: "A0".into(),
+            box_id: Some(box_record.id),
+            slot: Some("A0".into()),
             note: String::new(),
         },
     )
@@ -58,11 +59,24 @@ fn fixture() -> (Database, String, String) {
 }
 
 fn take(session_id: &str, part_id: &str, side: BomSide, quantity: i64) -> ConfirmTakeInput {
+    take_designating(session_id, part_id, side, quantity, &["R1"])
+}
+
+fn take_designating(
+    session_id: &str,
+    part_id: &str,
+    side: BomSide,
+    quantity: i64,
+    designators: &[&str],
+) -> ConfirmTakeInput {
     ConfirmTakeInput {
         session_id: session_id.into(),
         component_key: "C123".into(),
         side,
-        designators: vec!["R1".into()],
+        designators: designators
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
         bom_quantity: 3,
         take_quantity: quantity,
         part_id: part_id.into(),
@@ -78,7 +92,7 @@ fn top_and_bottom_takes_are_independent_and_additional_take_is_a_new_movement() 
     bottom_input.expected_part_version = top.part_version;
     let bottom = confirm_take_service(&db, bottom_input).unwrap();
 
-    let mut additional = take(&session_id, &part_id, BomSide::Top, 1);
+    let mut additional = take_designating(&session_id, &part_id, BomSide::Top, 1, &["R2"]);
     additional.expected_part_version = bottom.part_version;
     let extra = confirm_take_service(&db, additional).unwrap();
     assert_ne!(top.movement_id, extra.movement_id);
@@ -137,6 +151,78 @@ fn top_and_bottom_takes_are_independent_and_additional_take_is_a_new_movement() 
         ["R1"]
     );
     assert!(audit.5 > 0);
+}
+
+#[test]
+fn additional_take_keeps_the_bom_requirement_and_records_overconsumption() {
+    let (db, session_id, part_id) = fixture();
+    let first = confirm_take_service(&db, take(&session_id, &part_id, BomSide::Top, 2)).unwrap();
+    let mut extra = take_designating(&session_id, &part_id, BomSide::Top, 2, &["R2"]);
+    extra.expected_part_version = first.part_version;
+
+    let result = confirm_take_service(&db, extra).unwrap();
+
+    assert_eq!(result.required_quantity, 3);
+    assert_eq!(result.consumed_quantity, 4);
+    assert_eq!(result.status, "taken");
+    let progress = get_welding_progress_service(&db, &session_id).unwrap();
+    let top = progress
+        .iter()
+        .find(|item| item.side == BomSide::Top)
+        .unwrap();
+    assert_eq!((top.required_quantity, top.consumed_quantity), (3, 4));
+}
+
+#[test]
+fn the_same_designator_is_only_charged_once_until_its_take_is_reversed() {
+    let (db, session_id, part_id) = fixture();
+    let first = confirm_take_service(&db, take(&session_id, &part_id, BomSide::Top, 1)).unwrap();
+
+    let mut repeat = take(&session_id, &part_id, BomSide::Top, 1);
+    repeat.expected_part_version = first.part_version;
+    let error =
+        confirm_take_service(&db, repeat).expect_err("same designator must not be charged twice");
+    assert!(matches!(error, CommandError::Validation(message) if message.contains("均已取用")));
+
+    // The rejected retry must not have left any trace behind.
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM inventory_movements WHERE session_id = ?1",
+                [&session_id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+
+    reverse_take_service(&db, &first.movement_id).unwrap();
+    let mut retaken = take(&session_id, &part_id, BomSide::Top, 1);
+    retaken.expected_part_version = first.part_version + 1;
+    assert!(confirm_take_service(&db, retaken).is_ok());
+}
+
+#[test]
+fn a_wider_selection_raises_the_requirement_but_never_lowers_it() {
+    let (db, session_id, part_id) = fixture();
+    let narrow_input = take_designating(&session_id, &part_id, BomSide::Bottom, 1, &["R9"]);
+    let narrow = confirm_take_service(&db, narrow_input).unwrap();
+    assert_eq!(narrow.required_quantity, 3);
+
+    let mut wider = take_designating(&session_id, &part_id, BomSide::Bottom, 1, &["R8"]);
+    wider.expected_part_version = narrow.part_version;
+    wider.bom_quantity = 7;
+    let wider = confirm_take_service(&db, wider).unwrap();
+    assert_eq!(wider.required_quantity, 7);
+
+    let mut narrower = take_designating(&session_id, &part_id, BomSide::Bottom, 1, &["R7"]);
+    narrower.expected_part_version = wider.part_version;
+    narrower.bom_quantity = 2;
+    let narrower = confirm_take_service(&db, narrower).unwrap();
+    assert_eq!(
+        narrower.required_quantity, 7,
+        "a later narrow selection must not understate the requirement"
+    );
 }
 
 #[test]
@@ -217,7 +303,7 @@ fn complete_sequence_keeps_side_status_and_quantities_independent() {
     let bottom = confirm_take_service(&db, bottom_input).unwrap();
     assert_eq!(bottom.status, "partial");
 
-    let mut additional = take(&session_id, &part_id, BomSide::Top, 1);
+    let mut additional = take_designating(&session_id, &part_id, BomSide::Top, 1, &["R2"]);
     additional.expected_part_version = bottom.part_version;
     let top_done = confirm_take_service(&db, additional).unwrap();
     assert_eq!(top_done.status, "taken");
@@ -252,7 +338,7 @@ fn complete_sequence_keeps_side_status_and_quantities_independent() {
 }
 
 #[test]
-fn authorized_command_requires_exact_active_designators_and_uses_authoritative_quantity() {
+fn authorized_command_accepts_designator_subsets_and_uses_authoritative_quantity() {
     let root = tempfile::tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let runtime = InteractiveBomRuntime::new(root.path().join("cache"));
@@ -280,8 +366,8 @@ fn authorized_command_requires_exact_active_designators_and_uses_authoritative_q
             mpn: "ACME-10K".into(),
             lcsc_code: "C100".into(),
             quantity: 10,
-            box_id: box_record.id,
-            slot: "A0".into(),
+            box_id: Some(box_record.id),
+            slot: Some("A0".into()),
             note: String::new(),
         },
     )
@@ -290,17 +376,26 @@ fn authorized_command_requires_exact_active_designators_and_uses_authoritative_q
         session_id: session.session_id.clone(),
         component_key: "C100".into(),
         side: BomSide::Top,
-        designators: vec!["R1".into(), "R2".into()],
+        designators: vec!["R1".into()],
         bom_quantity: 999,
         take_quantity: 1,
         part_id: part.id.clone(),
         expected_part_version: 1,
     };
     let taken = confirm_take_authorized_service(&db, &runtime, valid.clone()).unwrap();
-    assert_eq!(taken.required_quantity, 2);
+    assert_eq!(taken.required_quantity, 1);
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT bom_quantity FROM inventory_movements WHERE id = ?1",
+                [&taken.movement_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
 
     for designators in [
-        vec!["R1".into()],
         vec!["R1".into(), "R2".into(), "R9".into()],
         vec!["R1".into(), "R1".into()],
         vec!["R1".into(), "R3".into()],

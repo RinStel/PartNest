@@ -30,8 +30,12 @@ html, body, #root { min-height: 100%; }
   padding: 0 .5rem .0 .75rem;
 }
 
-.pn-shell__brand-name { overflow: hidden; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.pn-brand-mark { display: block; flex: 0 0 auto; color: var(--accent); }
+.pn-shell__brand-name { min-width: 0; flex: 1; overflow: hidden; font-size: 14px; font-weight: 600; white-space: nowrap; }
 .pn-shell__toggle { flex: 0 0 auto; }
+.pn-shell__brand-mark-button { display: inline-grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 3px; padding: 0; color: var(--accent); background: transparent; cursor: pointer; }
+.pn-shell__brand-mark-button:hover { background: var(--bg-raised); }
+.pn-shell__brand-mark-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .pn-shell__nav {
   display: flex;

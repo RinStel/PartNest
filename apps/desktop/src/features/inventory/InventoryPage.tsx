@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Box, DesktopApi, desktopApi, errorMessage, normalizePart, Part, PartInput } from "../../app/tauri";
+import { Box, DesktopApi, desktopApi, errorMessage, LcscPartInfo, normalizePart, Part, PartInput } from "../../app/tauri";
 import { DataTable, type DataColumn } from "../../components/ui/DataTable";
 import { usePageActions } from "../../app/AppShell";
 import { PartDrawer } from "./PartDrawer";
 
-const blankPart: PartInput = { name: "", category: "", package: "", manufacturer: "", mpn: "", lcsc_code: "", quantity: 0, box_id: "", slot: "", note: "" };
-type InventoryApi = Pick<DesktopApi, "listParts" | "createPart" | "updatePart" | "adjustStock"> & Partial<Pick<DesktopApi, "deletePart" | "listBoxes">>;
+const blankPart: PartInput = { name: "", category: "", package: "", manufacturer: "", mpn: "", lcsc_code: "", quantity: 0, box_id: null, slot: null, note: "" };
+type InventoryApi = Pick<DesktopApi, "listParts" | "createPart" | "updatePart" | "adjustStock"> & Partial<Pick<DesktopApi, "deletePart" | "listBoxes" | "lookupLcsc">>;
 const toInput = (part: Part): PartInput => ({ ...part, category: part.category ?? "", package: part.package ?? "", manufacturer: part.manufacturer ?? "", mpn: part.mpn ?? "", lcsc_code: part.lcsc_code ?? "", note: part.note ?? "" });
 
 export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX.Element {
@@ -18,10 +18,20 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
   const drawerCloseRef = useRef<(() => Promise<boolean>) | null>(null);
   const [adjustment, setAdjustment] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
+  const [loadFailed, setLoadFailed] = useState(false);
   const [quantityText, setQuantityText] = useState("0");
-  const load = async () => { try { const [partResult, boxResult] = await Promise.all([api.listParts(search), api.listBoxes ? api.listBoxes() : Promise.resolve([])]); setParts(partResult.map(normalizePart)); setBoxes(boxResult); } catch (cause) { setError(errorMessage(cause)); } };
+  const load = async () => {
+    try {
+      const [partResult, boxResult] = await Promise.all([api.listParts(search), api.listBoxes ? api.listBoxes() : Promise.resolve([])]);
+      setParts(partResult.map(normalizePart));
+      setBoxes(boxResult);
+      setLoadFailed(false);
+    } catch {
+      setLoadFailed(true);
+    }
+  };
   useEffect(() => { void load(); }, [search]);
-  const setField = (field: keyof PartInput, value: string | number) => setForm((current) => ({ ...current, [field]: value }));
+  const setField = (field: keyof PartInput, value: string | number | null) => setForm((current) => ({ ...current, [field]: value }));
   const beginCreate = () => { setEditing(null); setForm({ ...blankPart }); setQuantityText("0"); setError(""); setDrawerOpen(true); };
   const openCreate = () => {
     if (drawerOpen) { const requestClose = drawerCloseRef.current; if (requestClose) void requestClose().then((closed) => { if (closed) beginCreate(); }); return; }
@@ -29,6 +39,7 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
   };
   const openEdit = (part: Part) => { setEditing(part); setForm(toInput(part)); setQuantityText(String(part.quantity)); setError(""); setDrawerOpen(true); };
   const closeDrawer = () => { setDrawerOpen(false); setEditing(null); setForm({ ...blankPart }); setQuantityText("0"); };
+  const boxNames = useMemo(() => new Map(boxes.map((box) => [box.id, box.name])), [boxes]);
   async function save() {
     setError("");
     try {
@@ -36,6 +47,9 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
       const input = { ...form, quantity: Number(quantityText) };
       const saved = normalizePart(editing ? await api.updatePart(editing.id, editing.version, input) : await api.createPart(input));
       setParts((current) => editing ? current.map((part) => part.id === saved.id ? saved : part) : [...current, saved]);
+      if (api.listBoxes) {
+        try { setBoxes(await api.listBoxes()); } catch { /* 保存已完成，盒位刷新失败时保留当前数据 */ }
+      }
       closeDrawer();
     } catch (cause) { setError(errorMessage(cause)); }
   }
@@ -55,27 +69,33 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
     try { await api.deletePart(part.id); setParts((current) => current.filter((item) => item.id !== part.id)); }
     catch (cause) { setError(errorMessage(cause)); }
   }
+  async function lookupLcsc() {
+    if (!api.lookupLcsc) { setError("LCSC 查询不可用"); return; }
+    setError("");
+    try {
+      const info: LcscPartInfo = await api.lookupLcsc(form.lcsc_code);
+      setForm((current) => ({ ...current, name: current.name.trim() ? current.name : info.name, category: current.category.trim() ? current.category : info.category, package: current.package.trim() ? current.package : info.package, manufacturer: current.manufacturer.trim() ? current.manufacturer : info.manufacturer, mpn: current.mpn.trim() ? current.mpn : info.mpn, lcsc_code: info.lcsc_code }));
+    } catch (cause) { setError(errorMessage(cause)); }
+  }
   const columns = useMemo<DataColumn<Part>[]>(() => [
-    { id: "name", header: "名称", width: 150, cell: (part) => part.name },
-    { id: "category", header: "分类", width: 100, cell: (part) => part.category || "—" },
-    { id: "package", header: "封装", width: 90, cell: (part) => part.package || "—" },
-    { id: "manufacturer", header: "制造商", width: 120, cell: (part) => part.manufacturer || "—" },
-    { id: "mpn", header: "MPN", width: 130, cell: (part) => part.mpn || "—" },
-    { id: "lcsc", header: "LCSC", width: 90, cell: (part) => part.lcsc_code || "—" },
-    { id: "box", header: "盒位", width: 120, cell: (part) => `${part.box_id || "—"}${part.slot ? ` / ${part.slot}` : ""}` },
+    { id: "name", header: "名称", width: 190, cell: (part) => part.name },
+    { id: "spec", header: "规格", width: 220, cell: (part) => [part.category, part.package, part.mpn].filter(Boolean).join(" · ") || "—" },
+    { id: "lcsc", header: "LCSC ID", width: 110, cell: (part) => part.lcsc_code || "—" },
+    { id: "box", header: "盒位", width: 150, cell: (part) => `${part.box_id === null ? "未分配" : (boxNames.get(part.box_id) || `盒子 #${part.box_id}`)}${part.slot ? ` / ${part.slot}` : ""}` },
     { id: "quantity", header: "库存", width: 70, cell: (part) => part.quantity },
-    { id: "actions", header: "操作", width: 260, cell: (part) => <div className="inventory-actions">
+    { id: "actions", header: "操作", width: 210, cell: (part) => <div className="inventory-actions">
       <button className="pn-button pn-button--ghost" type="button" onClick={() => openEdit(part)}>编辑</button>
       <span className="inventory-adjust"><input className="pn-control" aria-label={`${part.name}调整数量`} type="number" value={adjustment[part.id] ?? ""} onChange={(event) => setAdjustment((current) => ({ ...current, [part.id]: event.target.value }))} /><button className="pn-button pn-button--secondary" type="button" onClick={() => void adjust(part)}>调整</button></span>
       {api.deletePart && <button className="pn-button pn-button--ghost" type="button" onClick={() => void remove(part)}>删除</button>}
     </div> },
-  ], [adjustment, api.deletePart]);
+  ], [adjustment, api.deletePart, boxNames]);
   const toolbarActions = useMemo(() => <><input className="pn-control" aria-label="搜索库存" placeholder="名称、MPN 或 LCSC" value={search} onChange={(event) => setSearch(event.target.value)} /><button className="pn-button pn-button--primary" type="button" onClick={openCreate}>新增器件</button></>, [search, drawerOpen]);
   const inShell = usePageActions(toolbarActions);
-  return <section className="inventory-page" aria-label="库存管理">
+  return <section className="inventory-page inventory-page--workspace" aria-label="库存管理">
     {!inShell && <div className="inventory-local-toolbar">{toolbarActions}</div>}
+    {loadFailed && <div className="pn-inline-error inventory-load-error" role="alert">读取库存失败 <button className="pn-button pn-button--ghost" type="button" onClick={() => void load()}>重试</button></div>}
     {error && !drawerOpen && <p className="pn-inline-error" role="alert">{error}</p>}
     <DataTable label="器件列表" rows={parts} columns={columns} rowKey={(part) => part.id} emptyText="暂无器件" />
-    <PartDrawer open={drawerOpen} editing={editing} form={form} boxes={boxes} quantityText={quantityText} error={error} onChange={setField} onQuantityChange={setQuantityText} onSave={() => void save()} onRequestClose={closeDrawer} onRequestCloseReady={(request) => { drawerCloseRef.current = request; }} />
+    <PartDrawer open={drawerOpen} editing={editing} form={form} boxes={boxes} quantityText={quantityText} error={error} onChange={setField} onQuantityChange={setQuantityText} onLookupLcsc={() => void lookupLcsc()} onSave={() => void save()} onRequestClose={closeDrawer} onRequestCloseReady={(request) => { drawerCloseRef.current = request; }} />
   </section>;
 }

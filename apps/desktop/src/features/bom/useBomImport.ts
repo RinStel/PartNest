@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { BomGroup, InventoryPart, MatchResult } from "../../../../../packages/domain/src/bom/types";
-import { matchBomGroup } from "../../../../../packages/domain/src/bom/matching";
+import type { BomGroup, InventoryPart, MatchResult } from "@partnest/domain";
+import { matchBomGroup } from "@partnest/domain";
 import { desktopApi, type Part } from "../../app/tauri";
 import { useCallback, useRef, useState } from "react";
 
@@ -22,7 +22,9 @@ export type ImportPreview =
 
 export type BomImportApi = {
   inspectTabularBom: (sourcePath: string, mapping?: FieldMapping) => Promise<unknown>;
-  cacheInteractiveBom: (sourcePath: string, displayName: string) => Promise<unknown>;
+  /** Read-only analysis of an interactive BOM: no cache copy, no session switch. */
+  previewInteractiveBom: (sourcePath: string, companionCsvPath?: string) => Promise<unknown>;
+  cacheInteractiveBom: (sourcePath: string, displayName: string, companionCsvPath?: string) => Promise<unknown>;
   listParts: () => Promise<Part[]>;
 };
 
@@ -36,6 +38,7 @@ export type BomAnalysisRow = {
   shortage: number;
   match: MatchResult;
   status: "exact" | "candidate" | "none";
+  confirmed?: boolean;
   partId?: string;
   boxSlot?: string;
   candidateIds?: string[];
@@ -44,14 +47,22 @@ export type BomAnalysisRow = {
 const supported = new Set([".html", ".csv", ".xlsx"]);
 const fieldNames: FieldName[] = ["quantity", "designators", "name", "value", "package", "manufacturer", "mpn", "lcsc_code", "side"];
 
+const baseName = (value: string): string => value.split(/[\\/]/).pop() ?? value;
+
 const defaultApi: BomImportApi = {
   inspectTabularBom: (sourcePath, mapping) => invoke("inspect_tabular_bom", { sourcePath, mapping }),
-  cacheInteractiveBom: (sourcePath, displayName) => invoke("cache_interactive_bom", { sourcePath, displayName }),
+  previewInteractiveBom: (sourcePath, companionCsvPath) => invoke("preview_interactive_bom", { sourcePath, companionCsvPath }),
+  cacheInteractiveBom: (sourcePath, displayName, companionCsvPath) => invoke("cache_interactive_bom", { sourcePath, displayName, companionCsvPath }),
   listParts: () => desktopApi.listParts(),
 };
 
 export const defaultPickFile = async (): Promise<string | null> => {
   const selected = await open({ multiple: false, filters: [{ name: "BOM", extensions: ["html", "csv", "xlsx"] }] });
+  return typeof selected === "string" ? selected : null;
+};
+
+export const defaultPickCompanionFile = async (): Promise<string | null> => {
+  const selected = await open({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
   return typeof selected === "string" ? selected : null;
 };
 
@@ -109,26 +120,29 @@ export function createAnalysisRows(bom: NormalizedBomDto, parts: Part[], confirm
     return {
       componentKey: key, name: group.name, value: group.value, package: group.package,
       required, stock, shortage: Math.max(required - stock, 0), match,
-      status: match.kind === "candidate" ? "candidate" : match.kind === "none" ? "none" : "exact",
-      partId, boxSlot: part?.slot, candidateIds: match.kind === "candidate" ? match.partIds : undefined,
+      status: match.kind === "candidate" ? "candidate" : match.kind === "none" ? "none" : "exact", confirmed: Boolean(selected),
+      partId, boxSlot: part?.slot ?? undefined, candidateIds: match.kind === "candidate" ? match.partIds : undefined,
     };
   });
 }
 
-export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: { api?: BomImportApi; pickFile?: () => Promise<string | null> } = {}) {
+export function useBomImport({ api = defaultApi, pickFile = defaultPickFile, pickCompanionFile = defaultPickCompanionFile }: { api?: BomImportApi; pickFile?: () => Promise<string | null>; pickCompanionFile?: () => Promise<string | null> } = {}) {
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "needsMapping" | "unsupported" | "error">("idle");
   const [error, setError] = useState("");
   const [path, setPath] = useState("");
+  const [companionPath, setCompanionPath] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [headers, setHeaders] = useState<string[]>([]);
   const [mapping, setMapping] = useState<FieldMapping>({});
   const [bom, setBom] = useState<NormalizedBomDto | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
   const [rows, setRows] = useState<BomAnalysisRow[]>([]);
+  const [activatedPath, setActivatedPath] = useState("");
   const pendingImportRef = useRef<{
     status: typeof status;
     error: string;
     path: string;
+    companionPath: string;
     displayName: string;
     headers: string[];
     mapping: FieldMapping;
@@ -137,13 +151,17 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
     rows: BomAnalysisRow[];
   } | null>(null);
 
-  const inspect = useCallback(async (sourcePath: string, supplied?: FieldMapping, suppliedDisplayName?: string) => {
+  const inspect = useCallback(async (sourcePath: string, supplied?: FieldMapping, suppliedCompanionPath = companionPath) => {
     const extension = sourcePath.slice(sourcePath.lastIndexOf(".")).toLowerCase();
     if (!supported.has(extension)) { setStatus("unsupported"); setError("不支持的 BOM 格式"); return; }
-    setPath(sourcePath); setError(""); setStatus("loading");
+    setPath(sourcePath); setError(""); setStatus("loading"); setActivatedPath("");
     try {
+      // 选文件只做分析，“设为活动 BOM”才是显式动作，
+      // 避免分析页的副作用中断正在进行的焊接会话。
       const result = extension === ".html"
-        ? toPreview(await api.cacheInteractiveBom(sourcePath, (suppliedDisplayName ?? displayName).trim() || sourcePath.split(/[\\/]/).pop() || sourcePath))
+        ? toPreview(await (suppliedCompanionPath
+          ? api.previewInteractiveBom(sourcePath, suppliedCompanionPath)
+          : api.previewInteractiveBom(sourcePath)))
         : toPreview(await api.inspectTabularBom(sourcePath, supplied));
       if (result.kind === "NeedsMapping") {
         setHeaders(result.headers); setMapping(result.suggestions ?? {}); setStatus("needsMapping"); return;
@@ -153,17 +171,39 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
       setBom(result.bom); setParts(listed); setRows(createAnalysisRows(result.bom, listed)); setStatus("ready");
       pendingImportRef.current = null;
     } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
-  }, [api, displayName]);
+  }, [api, companionPath, displayName]);
+
+  /** Cache the interactive BOM and switch the welding workspace to it. */
+  const activate = useCallback(async () => {
+    if (!path.toLowerCase().endsWith(".html")) return;
+    setStatus("loading"); setError("");
+    try {
+      const remark = displayName.trim() || baseName(path);
+      const result = toPreview(await (companionPath
+        ? api.cacheInteractiveBom(path, remark, companionPath)
+        : api.cacheInteractiveBom(path, remark)));
+      if (result.kind !== "Ready") { setStatus("error"); setError(result.kind === "Unsupported" ? result.message ?? "BOM 导入失败" : "缓存交互式 BOM 失败"); return; }
+      const listed = await api.listParts();
+      setBom(result.bom); setParts(listed); setRows(createAnalysisRows(result.bom, listed)); setActivatedPath(path); setStatus("ready");
+    } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
+  }, [api, companionPath, displayName, path]);
 
   const chooseFile = useCallback(async () => {
     const selected = await pickFile();
     if (!selected) return;
-    pendingImportRef.current = { status, error, path, displayName, headers, mapping, bom, parts, rows };
-    const defaultName = selected.split(/[\\/]/).pop() ?? selected;
-    const remark = displayName.trim() || defaultName;
+    pendingImportRef.current = { status, error, path, companionPath, displayName, headers, mapping, bom, parts, rows };
+    const defaultName = baseName(selected);
     if (!displayName.trim()) setDisplayName(defaultName);
-    await inspect(selected, undefined, remark);
-  }, [bom, displayName, error, headers, inspect, mapping, parts, path, pickFile, rows, status]);
+    setCompanionPath("");
+    await inspect(selected, undefined, "");
+  }, [bom, companionPath, displayName, error, headers, inspect, mapping, parts, path, pickFile, rows, status]);
+  const chooseCompanionFile = useCallback(async () => {
+    if (!path.toLowerCase().endsWith(".html")) return;
+    const selected = await pickCompanionFile();
+    if (!selected) return;
+    setCompanionPath(selected);
+    await inspect(path, undefined, selected);
+  }, [inspect, path, pickCompanionFile]);
   const submitMapping = useCallback(async (next = mapping) => { setMapping(next); if (path) await inspect(path, next); }, [inspect, mapping, path]);
   const cancelMapping = useCallback(() => {
     const previous = pendingImportRef.current;
@@ -171,6 +211,7 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
       setStatus(previous.status);
       setError(previous.error);
       setPath(previous.path);
+      setCompanionPath(previous.companionPath);
       setDisplayName(previous.displayName);
       setHeaders(previous.headers);
       setMapping(previous.mapping);
@@ -190,7 +231,7 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile }: {
     const next = createAnalysisRows(bom, parts, Object.fromEntries(rows.map((row) => [row.componentKey, row.partId ?? ""]).filter(([, id]) => id).concat([[componentKey, partId]])));
     setRows(next);
   }, [bom, parts, rows]);
-  return { status, error, path, displayName, setDisplayName, headers, mapping, setMapping, bom, rows, chooseFile, inspect, submitMapping, cancelMapping, confirmMatch, fieldNames };
+  return { status, error, path, companionPath, displayName, setDisplayName, headers, mapping, setMapping, bom, rows, activated: Boolean(activatedPath) && activatedPath === path, chooseFile, chooseCompanionFile, inspect, activate, submitMapping, cancelMapping, confirmMatch, fieldNames };
 }
 
 export { fieldNames };

@@ -18,14 +18,15 @@ fn seed_database(path: &std::path::Path) -> Database {
     let db = Database::open(path).expect("open database");
     db.connection()
         .execute(
-            "INSERT INTO boxes (id, name, rows, cols) VALUES ('box-1', 'Bench', 2, 2)",
+            "INSERT INTO boxes (name, rows, cols) VALUES ('Bench', 2, 2)",
             [],
         )
         .unwrap();
+    let box_id = db.connection().last_insert_rowid();
     db.connection()
         .execute(
-            "INSERT INTO parts (id, name, quantity, box_id, slot) VALUES ('part-1', '10k', 4, 'box-1', 'A0')",
-            [],
+            "INSERT INTO parts (id, name, quantity, box_id, slot) VALUES ('part-1', '10k', 4, ?1, 'A0')",
+            [box_id],
         )
         .unwrap();
     db.connection()
@@ -137,14 +138,15 @@ fn backup_reads_rows_left_in_a_wal_without_source_checkpointing() {
         .unwrap();
     db.connection()
         .execute(
-            "INSERT INTO boxes (id, name, rows, cols) VALUES ('wal-box', 'WAL', 1, 1)",
+            "INSERT INTO boxes (name, rows, cols) VALUES ('WAL', 1, 1)",
             [],
         )
         .unwrap();
+    let wal_box_id = db.connection().last_insert_rowid();
     db.connection()
         .execute(
-            "INSERT INTO parts (id, name, quantity, box_id, slot) VALUES ('wal-part', 'WAL part', 7, 'wal-box', 'A0')",
-            [],
+            "INSERT INTO parts (id, name, quantity, box_id, slot) VALUES ('wal-part', 'WAL part', 7, ?1, 'A0')",
+            [wal_box_id],
         )
         .unwrap();
     let wal_path = sidecar(&db_path, "-wal");

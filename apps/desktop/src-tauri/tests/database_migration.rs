@@ -1,11 +1,73 @@
 use partnest_desktop_lib::db::{new_id, BoxRecord, Database, Migration, PartRecord};
 use rusqlite::params;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn test_database() -> Database {
     let path = test_path("db");
-    Database::open(&path).expect("open test database")
+    Database::open_with_migrations(
+        &path,
+        &[
+            Migration {
+                version: 1,
+                sql: include_str!("../migrations/0001_initial.sql"),
+            },
+            Migration {
+                version: 2,
+                sql: include_str!("../migrations/0002_welding_movement_metadata.sql"),
+            },
+            Migration {
+                version: 3,
+                sql: include_str!("../migrations/0003_movement_audit_and_active_session.sql"),
+            },
+            Migration {
+                version: 4,
+                sql: include_str!("../migrations/0004_lcsc_cache.sql"),
+            },
+            Migration {
+                version: 5,
+                sql: include_str!("../migrations/0005_allow_overconsumption.sql"),
+            },
+            Migration {
+                version: 6,
+                sql: include_str!("../migrations/0006_normalize_lcsc_codes.sql"),
+            },
+        ],
+    )
+    .expect("open test database")
+}
+
+/// A migration file that is never registered would silently leave databases
+/// behind, so the file set and the code set must stay identical.
+#[test]
+fn every_migration_file_is_registered_in_order_and_matches_the_schema_version() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut on_disk = fs::read_dir(&directory)
+        .expect("migrations directory")
+        .map(|entry| {
+            let name = entry.expect("migration entry").file_name();
+            let name = name.to_string_lossy().into_owned();
+            name.split('_')
+                .next()
+                .and_then(|prefix| prefix.parse::<i64>().ok())
+                .unwrap_or_else(|| panic!("{name} does not start with a version prefix"))
+        })
+        .collect::<Vec<_>>();
+    on_disk.sort_unstable();
+
+    let registered = partnest_desktop_lib::db::migrations()
+        .into_iter()
+        .map(|migration| migration.version)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        registered, on_disk,
+        "registered migrations must match migrations/"
+    );
+    assert_eq!(
+        on_disk.last().copied(),
+        Some(partnest_desktop_lib::backup::CURRENT_SCHEMA_VERSION),
+        "the newest migration must be the schema version backups are validated against"
+    );
 }
 
 fn test_path(suffix: &str) -> PathBuf {
@@ -117,6 +179,205 @@ fn migration_creates_lcsc_cache_without_changing_inventory_records() {
 }
 
 #[test]
+fn migration_normalizes_existing_lcsc_codes_before_rebuilding_uniqueness() {
+    let path = test_path("lcsc-normalization");
+    let initial = include_str!("../migrations/0001_initial.sql");
+    let welding = include_str!("../migrations/0002_welding_movement_metadata.sql");
+    let audit = include_str!("../migrations/0003_movement_audit_and_active_session.sql");
+    let cache = include_str!("../migrations/0004_lcsc_cache.sql");
+    let db = Database::open_with_migrations(
+        &path,
+        &[
+            Migration {
+                version: 1,
+                sql: initial,
+            },
+            Migration {
+                version: 2,
+                sql: welding,
+            },
+            Migration {
+                version: 3,
+                sql: audit,
+            },
+            Migration {
+                version: 4,
+                sql: cache,
+            },
+        ],
+    )
+    .unwrap();
+    insert_box(&db, "box-1");
+    db.connection()
+        .execute(
+            "INSERT INTO parts (id, name, quantity, box_id, slot, lcsc_code) VALUES (?1, 'Part', 1, 'box-1', 'A0', ' c123 ')",
+            params![uuid7_id()],
+        )
+        .unwrap();
+    drop(db);
+
+    let upgraded = Database::open(&path).unwrap();
+    let code: String = upgraded
+        .connection()
+        .query_row("SELECT lcsc_code FROM parts WHERE slot = 'A0'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(code, "C123");
+}
+
+#[test]
+fn migration_rebuilds_box_ids_as_integers_and_clears_zero_stock_locations() {
+    let path = test_path("integer-box-ids");
+    let migrations = [
+        Migration {
+            version: 1,
+            sql: include_str!("../migrations/0001_initial.sql"),
+        },
+        Migration {
+            version: 2,
+            sql: include_str!("../migrations/0002_welding_movement_metadata.sql"),
+        },
+        Migration {
+            version: 3,
+            sql: include_str!("../migrations/0003_movement_audit_and_active_session.sql"),
+        },
+        Migration {
+            version: 4,
+            sql: include_str!("../migrations/0004_lcsc_cache.sql"),
+        },
+        Migration {
+            version: 5,
+            sql: include_str!("../migrations/0005_allow_overconsumption.sql"),
+        },
+        Migration {
+            version: 6,
+            sql: include_str!("../migrations/0006_normalize_lcsc_codes.sql"),
+        },
+    ];
+    let db = Database::open_with_migrations(&path, &migrations).unwrap();
+    insert_box(&db, "legacy-box-a");
+    db.connection()
+        .execute(
+            "INSERT INTO boxes (id, name, rows, cols) VALUES ('legacy-box-b', 'Second', 2, 2)",
+            [],
+        )
+        .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO parts (id, name, quantity, box_id, slot, version) VALUES ('part-positive', 'Positive', 2, 'legacy-box-a', 'A0', 1)",
+            [],
+        )
+        .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO parts (id, name, quantity, box_id, slot, version) VALUES ('part-empty', 'Empty', 0, 'legacy-box-b', 'A1', 1)",
+            [],
+        )
+        .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES ('bom-1', 'board.html', 'Board', 'hash', 'hash.html')",
+            [],
+        )
+        .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO welding_sessions (id, bom_file_id, status) VALUES ('session-1', 'bom-1', 'active')",
+            [],
+        )
+        .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO welding_progress (id, session_id, component_key, side, part_id, required_quantity, taken_quantity) VALUES ('progress-1', 'session-1', 'R1', 'top', 'part-positive', 1, 0)",
+            [],
+        )
+        .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason) VALUES ('movement-1', 'part-positive', 'session-1', 'consume', -1, 'take')",
+            [],
+        )
+        .unwrap();
+    drop(db);
+
+    let upgraded = Database::open(&path).unwrap();
+    let box_id: i64 = upgraded
+        .connection()
+        .query_row("SELECT id FROM boxes WHERE name = 'Second'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let positive_box_id: i64 = upgraded
+        .connection()
+        .query_row(
+            "SELECT box_id FROM parts WHERE id = 'part-positive'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(box_id > 0);
+    assert_eq!(
+        upgraded
+            .connection()
+            .query_row(
+                "SELECT typeof(id) FROM boxes WHERE name = 'Second'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "integer"
+    );
+    assert_eq!(
+        upgraded
+            .connection()
+            .query_row(
+                "SELECT box_id, slot FROM parts WHERE id = 'part-positive'",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap(),
+        (positive_box_id, "A0".to_owned())
+    );
+    assert_eq!(
+        upgraded
+            .connection()
+            .query_row(
+                "SELECT box_id, slot FROM parts WHERE id = 'part-empty'",
+                [],
+                |row| Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, Option<String>>(1)?
+                )),
+            )
+            .unwrap(),
+        (None, None)
+    );
+    assert_eq!(
+        upgraded
+            .connection()
+            .query_row(
+                "SELECT part_id FROM welding_progress WHERE id = 'progress-1'",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap(),
+        Some("part-positive".to_owned())
+    );
+    assert_eq!(
+        upgraded
+            .connection()
+            .query_row(
+                "SELECT part_id FROM inventory_movements WHERE id = 'movement-1'",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap(),
+        Some("part-positive".to_owned())
+    );
+}
+
+#[test]
 fn migration_enforces_progress_uniqueness_and_quantity_bounds() {
     let db = test_database();
     insert_box(&db, "box-1");
@@ -130,7 +391,7 @@ fn migration_enforces_progress_uniqueness_and_quantity_bounds() {
         .connection()
         .execute(valid, rusqlite::params![uuid7_id()])
         .is_err());
-    assert!(db.connection().execute("INSERT INTO welding_progress (id, session_id, component_key, side, required_quantity, taken_quantity) VALUES (?1, 'session-1', 'R2', 'top', 1, 2)", rusqlite::params![uuid7_id()]).is_err());
+    assert!(db.connection().execute("INSERT INTO welding_progress (id, session_id, component_key, side, required_quantity, taken_quantity) VALUES (?1, 'session-1', 'R2', 'top', 1, 2)", rusqlite::params![uuid7_id()]).is_ok());
     assert!(db.connection().execute("INSERT INTO welding_progress (id, session_id, component_key, side, required_quantity, taken_quantity) VALUES (?1, 'session-1', 'R3', 'top', -1, 0)", rusqlite::params![uuid7_id()]).is_err());
     assert!(db.connection().execute("INSERT INTO welding_progress (id, session_id, component_key, side, required_quantity, taken_quantity) VALUES (?1, 'session-1', 'R4', 'top', 1, -1)", rusqlite::params![uuid7_id()]).is_err());
 }
@@ -264,15 +525,10 @@ fn migration_runner_rolls_back_failures_and_reopens_idempotently() {
 }
 
 #[test]
-fn constructors_generate_uuidv7_ids() {
+fn constructors_keep_part_uuid_ids_and_use_zero_for_unsaved_boxes() {
     let box_record = BoxRecord::new("Box".into(), 2, 3);
-    let part_record = PartRecord::new("Part".into(), "box-1".into(), "A0".into(), 1);
-    assert_eq!(
-        uuid::Uuid::parse_str(&box_record.id)
-            .unwrap()
-            .get_version_num(),
-        7
-    );
+    let part_record = PartRecord::new("Part".into(), Some(1), Some("A0".into()), 1);
+    assert_eq!(box_record.id, 0);
     assert_eq!(
         uuid::Uuid::parse_str(&part_record.id)
             .unwrap()
@@ -452,4 +708,66 @@ fn migration_rejects_unknown_future_and_missing_versions() {
             .unwrap();
     }
     assert!(Database::open(&gap_path).is_err());
+}
+
+#[test]
+fn migration_backfills_confirmed_designators_from_surviving_take_movements() {
+    // Databases created before version 8 have no designator-level audit, so the
+    // duplicate-take guard would be vacuous unless the take history is replayed.
+    let path = test_path("legacy-confirmed-designators");
+    let migrations = [
+        Migration {
+            version: 1,
+            sql: include_str!("../migrations/0001_initial.sql"),
+        },
+        Migration {
+            version: 2,
+            sql: include_str!("../migrations/0002_welding_movement_metadata.sql"),
+        },
+        Migration {
+            version: 3,
+            sql: include_str!("../migrations/0003_movement_audit_and_active_session.sql"),
+        },
+        Migration {
+            version: 4,
+            sql: include_str!("../migrations/0004_lcsc_cache.sql"),
+        },
+        Migration {
+            version: 5,
+            sql: include_str!("../migrations/0005_allow_overconsumption.sql"),
+        },
+        Migration {
+            version: 6,
+            sql: include_str!("../migrations/0006_normalize_lcsc_codes.sql"),
+        },
+    ];
+    let db = Database::open_with_migrations(&path, &migrations).expect("legacy database");
+    insert_box(&db, "legacy-box");
+    let part_id = uuid7_id();
+    db.connection().execute("INSERT INTO parts (id, name, quantity, box_id, slot) VALUES (?1, 'Part', 3, 'legacy-box', 'A0')", rusqlite::params![part_id]).unwrap();
+    db.connection().execute("INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES ('bom-1', 'a.html', 'A', 'hash', 'hash.html')", []).unwrap();
+    db.connection().execute("INSERT INTO welding_sessions (id, bom_file_id, status) VALUES ('session-1', 'bom-1', 'active')", []).unwrap();
+    db.connection().execute("INSERT INTO welding_progress (id, session_id, component_key, side, part_id, required_quantity, taken_quantity) VALUES ('progress-1', 'session-1', 'C1', 'top', ?1, 3, 3)", rusqlite::params![part_id]).unwrap();
+    db.connection().execute("INSERT INTO welding_progress (id, session_id, component_key, side, part_id, required_quantity, taken_quantity) VALUES ('progress-2', 'session-1', 'C9', 'top', ?1, 1, 0)", rusqlite::params![part_id]).unwrap();
+    db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side, confirmation_designators) VALUES ('take-1', ?1, 'session-1', 'consume', -2, 'take', 'C1', 'top', '[\"R1\",\"R2\"]')", rusqlite::params![part_id]).unwrap();
+    db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, component_key, side, confirmation_designators) VALUES ('take-2', ?1, 'session-1', 'consume', -1, 'take', 'C1', 'top', '[\"R3\"]')", rusqlite::params![part_id]).unwrap();
+    db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, reverses_movement_id, component_key, side) VALUES ('undo-1', ?1, 'session-1', 'reverse', 1, 'undo', 'take-2', 'C1', 'top')", rusqlite::params![part_id]).unwrap();
+    drop(db);
+
+    let upgraded = Database::open(&path).expect("upgrade to the confirmed designator schema");
+    let confirmed = |component_key: &str| -> Vec<String> {
+        let raw = upgraded
+            .connection()
+            .query_row(
+                "SELECT confirmed_designators FROM welding_progress WHERE component_key = ?1",
+                [component_key],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        let mut values: Vec<String> = serde_json::from_str(&raw).unwrap();
+        values.sort();
+        values
+    };
+    assert_eq!(confirmed("C1"), ["R1".to_owned(), "R2".to_owned()]);
+    assert_eq!(confirmed("C9"), Vec::<String>::new());
 }

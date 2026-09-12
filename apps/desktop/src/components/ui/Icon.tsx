@@ -8,13 +8,22 @@ export interface IconProps extends Omit<SVGProps<SVGSVGElement>, "name"> {
   title?: string;
 }
 
+export function BrandMark({ size = 20 }: { size?: number }) {
+  return <svg className="pn-brand-mark" width={size} height={size} viewBox="0 0 24 24" role="img" aria-label="PartNest" focusable="false">
+    <rect x="3" y="3" width="18" height="18" rx="4" fill="currentColor" opacity=".18" />
+    <path d="M7 8.5 12 6l5 2.5v7L12 18l-5-2.5v-7Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="m7 8.5 5 2.5 5-2.5M12 11v7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <circle cx="7" cy="6" r="1" fill="currentColor" /><circle cx="17" cy="6" r="1" fill="currentColor" /><circle cx="12" cy="19" r="1" fill="currentColor" />
+  </svg>;
+}
+
 const paths: Record<IconName, JSX.Element> = {
-  inventory: <path d="M4 5.5 12 3l8 2.5v13L12 21l-8-2.5v-13Zm8-2.5v18m-8-15 8 2.5L20 6M4 12l8 2.5 8-2.5" />,
-  boxes: <path d="m3.5 7 8.5-4 8.5 4v10l-8.5 4-8.5-4V7Zm8.5-4v8m8.5-4-8.5 4-8.5-4M7 9.5v5l5 2.5 5-2.5v-5" />,
-  bom: <path d="M5 3h14v18H5V3Zm3 4h8M8 11h8M8 15h5" />,
-  welding: <path d="m5 19 5.5-5.5m-1-5L14 4l6 6-4.5 4.5M5 19l4 1 1-4-4-1-1 4Zm7-12 2 2m-4 2 2 2" />,
-  movements: <path d="M5 7h12m0 0-3-3m3 3-3 3M19 17H7m0 0 3-3m-3 3 3 3" />,
-  settings: <path d="m12 3 1.2 2.5 2.7.5 1.9-1.6 2.1 2.1-1.6 1.9.5 2.7L21 12l-2.2 1.2-.5 2.7 1.6 1.9-2.1 2.1-1.9-1.6-2.7.5L12 21l-1.2-2.2-2.7-.5-1.9 1.6-2.1-2.1 1.6-1.9-.5-2.7L3 12l2.2-1.2.5-2.7-1.6-1.9 2.1-2.1 1.9 1.6 2.7-.5L12 3Zm0 6a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />,
+  inventory: <><path d="M3 21V8l9-5 9 5v13" /><path d="M3 13h18M8 21v-4h8v4" /></>,
+  boxes: <><path d="m4 7 8-4 8 4v10l-8 4-8-4V7Z" /><path d="m4 7 8 4 8-4M12 11v10" /><path d="M8 5l8 4" /></>,
+  bom: <><path d="M6 3h10l3 3v15H6V3Z" /><path d="M16 3v4h4M9 11h6M9 15h6M9 19h4" /></>,
+  welding: <><path d="m14 5 5 5-7 7-5-5 7-7Z" /><path d="m6 13-3 8 8-3M15 4l2-2M18 7l2-2" /><path d="m9 15 2 2" /></>,
+  movements: <><path d="M7 7h11l-3-3M17 17H6l3 3" /><path d="M18 7l-3 3M6 17l3-3" /></>,
+  settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56V20.3h-3v-.08A1.7 1.7 0 0 0 10.66 18.66a1.7 1.7 0 0 0-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 0 0 7 15a1.7 1.7 0 0 0-1.56-1.04h-.08v-3h.08A1.7 1.7 0 0 0 7 9.92a1.7 1.7 0 0 0-.34-1.88l-.06-.06L8.72 5.86l.06.06a1.7 1.7 0 0 0 1.88.34 1.7 1.7 0 0 0 1.04-1.56v-.08h3v.08a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.12 2.12-.06.06A1.7 1.7 0 0 0 19.4 9.92a1.7 1.7 0 0 0 1.56 1.04h.08v3h-.08A1.7 1.7 0 0 0 19.4 15Z" /></>,
   menu: <path d="M4 6h16M4 12h16M4 18h16" />,
 };
 

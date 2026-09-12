@@ -4,8 +4,8 @@ import { MemoryRouter } from "react-router-dom";
 import { BoxesPage } from "./BoxesPage";
 
 afterEach(cleanup);
-const box = { id: "box-1", name: "抽屉盒", rows: 2, cols: 4, occupied_slots: ["A0"] };
-const part = { id: "part-1", name: "10k", category: "resistor", package: "0603", manufacturer: "", mpn: "", lcsc_code: "", quantity: 8, box_id: "box-1", slot: "A0", note: "", version: 1 };
+const box = { id: 1, name: "抽屉盒", rows: 2, cols: 4, occupied_slots: ["A0"] };
+const part = { id: "part-1", name: "10k", category: "resistor", package: "0603", manufacturer: "", mpn: "", lcsc_code: "", quantity: 8, box_id: 1, slot: "A0", note: "", version: 1 };
 
 describe("BoxesPage", () => {
   it("splits box list and slot workspace and maps occupied slot details", async () => {
@@ -15,8 +15,8 @@ describe("BoxesPage", () => {
     expect(screen.getByRole("complementary", { name: "收纳盒列表" })).toBeInTheDocument();
     expect(screen.getByLabelText("A0 已占用 10k 数量 8")).toBeInTheDocument();
     expect(screen.getByLabelText("A1 空闲")).toBeInTheDocument();
-    expect(screen.getByLabelText("A0 已占用 10k 数量 8")).toHaveTextContent("已占用");
-    expect(screen.getByLabelText("A1 空闲")).toHaveTextContent("空闲");
+    expect(screen.getByLabelText("A0 已占用 10k 数量 8")).not.toHaveTextContent("已占用");
+    expect(screen.getByLabelText("A1 空闲")).not.toHaveTextContent("空闲");
   });
 
   it("opens a dialog for create and retains backend resize occupancy errors", async () => {
@@ -28,7 +28,7 @@ describe("BoxesPage", () => {
     fireEvent.change(screen.getByLabelText("列"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     expect(await screen.findByText("目标规格包含不了已占用盒位 A0")).toBeVisible();
-    expect(api.resizeBox).toHaveBeenCalledWith("box-1", 2, 3);
+    expect(api.resizeBox).toHaveBeenCalledWith(1, 2, 3);
   });
 
   it("routes dialog cancel through dirty confirmation", async () => {

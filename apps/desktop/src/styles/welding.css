@@ -4,9 +4,39 @@
   min-width: 0;
   min-height: 0;
   grid-template-columns: minmax(0, 13fr) minmax(19rem, 7fr);
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: .625rem;
 }
+
+.welding-empty-state {
+  display: grid;
+  min-height: 18rem;
+  place-items: center;
+  align-content: center;
+  gap: .625rem;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+}
+.welding-empty-state strong { color: var(--text); font-size: 14px; font-weight: 600; }
+.welding-empty-state p { margin: 0; color: var(--danger); font-size: 12px; }
+.welding-empty-state__actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+
+.welding-workspace__header {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  padding: .75rem .875rem;
+}
+.welding-workspace__header h1 { margin: 0; color: var(--text); font-size: 16px; }
+.welding-workspace__eyebrow { margin: 0 0 .15rem; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.welding-workspace__file { max-width: 26rem; margin: .2rem 0 0; overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.welding-workspace__meta { display: flex; flex-wrap: wrap; gap: .35rem; color: var(--text-muted); font-size: 11px; }
+.welding-workspace__meta span { border: 1px solid var(--border); border-radius: 999px; padding: .25rem .5rem; }
 
 .welding-bom {
   min-width: 0;
@@ -30,6 +60,7 @@
 }
 
 .welding-right {
+  grid-row: 2;
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -41,11 +72,45 @@
 .welding-sides { display: flex; gap: .25rem; }
 .welding-sides [role="tab"] { flex: 1 1 0; }
 .welding-sides .pn-button { min-width: 0; }
+.welding-progress-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .375rem; }
+.welding-progress-summary > span { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: .25rem .5rem; border: 1px solid var(--border); background: var(--bg-panel); padding: .4rem .5rem; color: var(--text-muted); font-size: 11px; }
+.welding-progress-summary > span strong { color: var(--text); font-size: 12px; font-weight: 600; }
+.welding-progress-summary > span .pn-status-badge { grid-column: 1 / -1; justify-self: start; }
 .welding-status-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 .welding-empty-side { margin: .75rem 0; color: var(--text-muted); }
+.welding-selection { margin: 0; color: var(--text-muted); font-size: 12px; }
+.welding-selection-card { display: grid; gap: .35rem; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--bg-panel)); padding: .625rem; }
+.welding-selection-card > div { display: flex; min-width: 0; align-items: baseline; gap: .4rem; }
+.welding-selection-card strong { overflow: hidden; color: var(--text); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.welding-selection-card__label, .welding-selection-card__key { color: var(--text-muted); font-size: 11px; }
+.welding-selection-card__key { margin-left: auto; }
+.welding-feedback { margin: 0; border: 1px solid var(--border); padding: .45rem .55rem; font-size: 12px; }
+.welding-feedback--error { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--bg-panel)); }
+.welding-feedback--success { border-color: color-mix(in srgb, var(--success) 55%, var(--border)); color: var(--success); background: color-mix(in srgb, var(--success) 8%, var(--bg-panel)); }
+
+.take-panel {
+  display: flex;
+  flex-direction: column;
+  gap: .625rem;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  padding: .625rem;
+}
+.take-panel__header { display: flex; min-height: 24px; align-items: center; justify-content: space-between; gap: .5rem; }
+.take-panel__header h2 { margin: 0; font-size: 13px; }
+.take-panel__statuses { display: flex; gap: .375rem; }
+.take-panel__details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem .75rem; }
+.take-panel__details > div { display: grid; min-width: 0; gap: .125rem; }
+.take-panel__details span { color: var(--text-muted); font-size: 11px; }
+.take-panel__details strong { overflow: hidden; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.take-panel__controls { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: .5rem; }
+.take-panel__controls label { display: grid; gap: .25rem; color: var(--text-muted); font-size: 11px; }
+.take-panel__controls .pn-control { width: 100%; }
+.take-panel > .pn-button { align-self: stretch; }
 
 .component-tray {
   grid-column: 1 / -1;
+  grid-row: 3;
   min-width: 0;
   max-height: calc(30px + min(14rem, 28vh));
   overflow: hidden;
@@ -67,13 +132,16 @@
 .component-tray__table { min-width: 0; max-height: min(14rem, 28vh); overflow: auto; font-size: 12px; }
 .component-tray__row { display: flex; min-width: 28rem; }
 .component-tray__row[data-active="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel)); }
+.component-tray__row[data-selectable="true"] { cursor: pointer; }
+.component-tray__row[data-selectable="true"]:hover, .component-tray__row[data-selectable="true"]:focus-visible { outline: 0; background: color-mix(in srgb, var(--accent) 9%, var(--bg-panel)); }
 .component-tray__cell { box-sizing: border-box; flex: 0 0 auto; overflow: hidden; border-bottom: 1px solid var(--border); padding: .3rem .5rem; text-overflow: ellipsis; white-space: nowrap; }
 .component-tray__header-cell { color: var(--text-muted); font-weight: 600; background: var(--bg-raised); }
 .component-tray__cell [role="separator"] { cursor: col-resize; padding: 0 .15rem; border: 0; background: transparent; color: var(--text-muted); }
 .component-tray__empty { margin: .5rem; color: var(--text-muted); }
 
 @media (max-width: 900px) {
-  .welding-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(20rem, 1fr) auto auto; }
-  .welding-right { grid-row: 2; }
-  .component-tray { grid-row: 3; }
+  .welding-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(20rem, 1fr) auto auto; }
+  .welding-bom { grid-row: 2; }
+  .welding-right { grid-row: 3; }
+  .component-tray { grid-row: 4; }
 }

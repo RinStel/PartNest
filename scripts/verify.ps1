@@ -3,29 +3,25 @@ param()
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+. (Join-Path $PSScriptRoot "msvc-env.ps1")
 
-function Invoke-VerificationCommand {
-    param(
-        [Parameter(Mandatory = $true)][string]$Command,
-        [Parameter(Mandatory = $false)][string[]]$Arguments = @()
-    )
-
-    Write-Host ("> {0} {1}" -f $Command, ($Arguments -join " "))
-    & $Command @Arguments
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        throw "验证命令失败（退出码 $exitCode）：$Command $($Arguments -join ' ')"
-    }
-}
 Push-Location $repoRoot
 try {
-    Invoke-VerificationCommand "pnpm" @("test")
-    Invoke-VerificationCommand "pnpm" @("build")
-    Invoke-VerificationCommand "cargo" @("test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml")
-    Invoke-VerificationCommand "cargo" @("fmt", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "--check")
-    Invoke-VerificationCommand ".\node_modules\.bin\tsc.CMD" @("-p", "apps/desktop/tsconfig.json", "--noEmit")
-    Invoke-VerificationCommand "pnpm" @("--filter", "@partnest/desktop", "tauri", "build")
-    Invoke-VerificationCommand "git" @("diff", "--check")
+    # Rust 构建需要 MSVC C++ 环境，并且必须清除带空格的 CC/CXX 覆盖，
+    # 否则 cc-rs 找不到编译器，整条验证链在开发机上跑不通。
+    $vsDevCmdPath = Get-PnVsDevCmdPath
+    if ($vsDevCmdPath) {
+        Write-Host "已加载 Visual Studio x64 C++ 构建环境。"
+    }
+
+    Invoke-PnCommand "pnpm test"
+    Invoke-PnCommand "pnpm build"
+    Invoke-PnCommand "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml" -VsDevCmdPath $vsDevCmdPath
+    Invoke-PnCommand "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --offline -- -D warnings" -VsDevCmdPath $vsDevCmdPath
+    Invoke-PnCommand "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check"
+    Invoke-PnCommand ".\node_modules\.bin\tsc.CMD -p apps/desktop/tsconfig.json --noEmit"
+    Invoke-PnCommand "pnpm --filter @partnest/desktop tauri build" -VsDevCmdPath $vsDevCmdPath
+    Invoke-PnCommand "git diff --check"
 }
 catch {
     Write-Error $_

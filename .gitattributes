@@ -1,0 +1,8 @@
+# 仓库统一使用 LF 换行，避免 Windows 检出后脚本、迁移与 Rust 源码出现混合换行。
+* text=auto eol=lf
+
+# 二进制资源不参与换行转换。
+*.ico binary
+*.png binary
+*.xlsx binary
+*.icns binary

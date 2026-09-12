@@ -9,7 +9,7 @@ describe("frontend Tauri boundary", () => {
   it("normalizes nullable Rust metadata", () => {
     expect(normalizePart({
       id: "p", name: "part", category: null, package: null, manufacturer: null,
-      mpn: null, lcsc_code: null, quantity: 0, box_id: "b", slot: "A0", note: null, version: 1,
+      mpn: null, lcsc_code: null, quantity: 0, box_id: 1, slot: "A0", note: null, version: 1,
     })).toMatchObject({ category: "", package: "", manufacturer: "", mpn: "", lcsc_code: "", note: "" });
   });
 });

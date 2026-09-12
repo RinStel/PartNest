@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export type Box = {
-  id: string;
+  id: number;
   name: string;
   rows: number;
   cols: number;
@@ -16,12 +16,13 @@ export type PartInput = {
   mpn: string;
   lcsc_code: string;
   quantity: number;
-  box_id: string;
-  slot: string;
+  box_id: number | null;
+  slot: string | null;
   note: string;
 };
 
 export type Part = PartInput & { id: string; version: number };
+export type LcscPartInfo = Pick<PartInput, "lcsc_code" | "name" | "category" | "package" | "manufacturer" | "mpn">;
 export type PartDto = Omit<PartInput, "category" | "package" | "manufacturer" | "mpn" | "lcsc_code" | "note"> & {
   id: string;
   category: string | null;
@@ -114,6 +115,8 @@ export type WeldingProgress = {
   required_quantity: number;
   consumed_quantity: number;
   taken_quantity: number;
+  /** Designators already charged for this side; a second take must not repeat them. */
+  confirmed_designators: string[];
   status: string;
 };
 
@@ -140,15 +143,17 @@ export type Movement = {
 export type DesktopApi = {
   listBoxes: () => Promise<Box[]>;
   createBox: (input: Pick<Box, "name" | "rows" | "cols">) => Promise<Box>;
-  resizeBox: (id: string, rows: number, cols: number) => Promise<Box>;
-  updateBox: (id: string, input: Pick<Box, "name" | "rows" | "cols">) => Promise<Box>;
-  deleteBox: (id: string) => Promise<void>;
+  resizeBox: (id: number, rows: number, cols: number) => Promise<Box>;
+  updateBox: (id: number, input: Pick<Box, "name" | "rows" | "cols">) => Promise<Box>;
+  deleteBox: (id: number) => Promise<void>;
   listParts: (search?: string) => Promise<Part[]>;
   createPart: (input: PartInput) => Promise<Part>;
   updatePart: (id: string, expectedVersion: number, input: PartInput) => Promise<Part>;
   adjustStock: (id: string, delta: number, reason: string) => Promise<Part>;
   deletePart: (id: string) => Promise<void>;
+  lookupLcsc: (lcscCode: string) => Promise<LcscPartInfo>;
   restoreActiveInteractiveBom: () => Promise<CachedBomSession | null>;
+  /** Resolve a selection reported by the BOM frame using the bridge contract. */
   resolveBomSelection: (token: string, designators: string[]) => Promise<ResolvedBomSelection>;
   confirmTake: (input: ConfirmTakeInput) => Promise<TakeResult>;
   reverseTake: (movementId: string) => Promise<TakeResult>;
@@ -169,8 +174,10 @@ export const desktopApi: DesktopApi = {
   updatePart: async (id, expectedVersion, input) => normalizePart(await invoke<PartDto>("update_part", { id, expectedVersion, input })),
   adjustStock: async (id, delta, reason) => normalizePart(await invoke<PartDto>("adjust_stock", { id, delta, reason })),
   deletePart: (id) => invoke("delete_part", { id }),
+  lookupLcsc: (lcscCode) => invoke("lookup_lcsc", { lcscCode }),
   restoreActiveInteractiveBom: () => invoke("restore_active_interactive_bom"),
-  resolveBomSelection: (token, designators) => invoke("resolve_bom_selection", { token, designators }),
+  // 把原始桥接消息原样交给 Rust 校验契约，不在 webview 层重新实现一套规则。
+  resolveBomSelection: (token, designators) => invoke("resolve_bom_selection", { message: { type: "partnest:bom-selection", token, designators } }),
   confirmTake: (input) => invoke("confirm_take", { input }),
   reverseTake: (movementId) => invoke("reverse_take", { movementId }),
   getWeldingProgress: (sessionId) => invoke("get_welding_progress", { sessionId }),

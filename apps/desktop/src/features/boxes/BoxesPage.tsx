@@ -10,7 +10,7 @@ const slotName = (index: number, cols: number) => `${String.fromCharCode(65 + Ma
 export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }): JSX.Element {
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [parts, setParts] = useState<Part[]>([]);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const dialogCloseRef = useRef<(() => Promise<boolean>) | null>(null);
   const [editing, setEditing] = useState<Box | null>(null);
@@ -20,12 +20,12 @@ export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }): JSX.Element
     try {
       const [boxResult, partResult] = await Promise.all([api.listBoxes(), api.listParts ? api.listParts() : Promise.resolve([])]);
       setBoxes(boxResult); setParts(partResult.map(normalizePart));
-      setSelectedId((current) => current || boxResult[0]?.id || "");
+      setSelectedId((current) => current ?? boxResult[0]?.id ?? null);
     } catch (cause) { setError(errorMessage(cause)); }
   };
   useEffect(() => { void load(); }, []);
   const selected = boxes.find((box) => box.id === selectedId) ?? null;
-  const partBySlot = useMemo(() => new Map(parts.filter((part) => part.box_id === selected?.id).map((part) => [part.slot, part])), [parts, selected?.id]);
+  const partBySlot = useMemo(() => new Map(parts.filter((part) => part.box_id === selected?.id && part.quantity > 0 && part.slot !== null).map((part) => [part.slot as string, part])), [parts, selected?.id]);
   const beginCreate = () => { setEditing(null); setDraft({ ...emptyDraft }); setError(""); setDialogOpen(true); };
   const openCreate = () => {
     if (dialogOpen) { const requestClose = dialogCloseRef.current; if (requestClose) void requestClose().then((closed) => { if (closed) beginCreate(); }); return; }
@@ -47,7 +47,7 @@ export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }): JSX.Element
   async function removeSelected() {
     if (!selected || !api.deleteBox || !window.confirm(`删除收纳盒“${selected.name}”？`)) return;
     setError("");
-    try { await api.deleteBox(selected.id); const next = boxes.filter((box) => box.id !== selected.id); setBoxes(next); setSelectedId(next[0]?.id ?? ""); }
+    try { await api.deleteBox(selected.id); const next = boxes.filter((box) => box.id !== selected.id); setBoxes(next); setSelectedId(next[0]?.id ?? null); }
     catch (cause) { setError(errorMessage(cause)); }
   }
   const toolbarActions = useMemo(() => <button className="pn-button pn-button--primary" type="button" onClick={openCreate}>新增收纳盒</button>, [dialogOpen]);
@@ -63,7 +63,7 @@ export function BoxesPage({ api = desktopApi }: { api?: BoxesApi }): JSX.Element
         {selected ? <>
           <div className="box-workspace__header"><h2 className="box-workspace__title">{selected.name}</h2><div className="inventory-actions"><button className="pn-button pn-button--secondary" type="button" onClick={openEdit}>编辑</button>{api.deleteBox && <button className="pn-button pn-button--ghost" type="button" onClick={() => void removeSelected()}>删除</button>}</div></div>
           <div className="box-grid" style={{ "--box-cols": selected.cols } as React.CSSProperties} aria-label={`${selected.name}盒位网格`}>
-            {Array.from({ length: selected.rows * selected.cols }, (_, index) => { const slot = slotName(index, selected.cols); const part = partBySlot.get(slot); return <div key={slot} className={`box-slot${part ? " box-slot--occupied" : ""}`} aria-label={`${slot}${part ? ` 已占用 ${part.name} 数量 ${part.quantity}` : " 空闲"}`}><span>{slot}</span><span className="box-slot__status">{part ? "已占用" : "空闲"}</span>{part && <><span className="box-slot__part">{part.name}</span><span className="box-slot__quantity">×{part.quantity}</span></>}</div>; })}
+            {Array.from({ length: selected.rows * selected.cols }, (_, index) => { const slot = slotName(index, selected.cols); const part = partBySlot.get(slot); return <div key={slot} className={`box-slot${part ? " box-slot--occupied" : ""}`} aria-label={`${slot}${part ? ` 已占用 ${part.name} 数量 ${part.quantity}` : " 空闲"}`}><span>{slot}</span>{part && <><span className="box-slot__part">{part.name}</span><span className="box-slot__quantity">×{part.quantity}</span></>}</div>; })}
           </div>
         </> : <p className="boxes-empty">选择收纳盒</p>}
       </div>

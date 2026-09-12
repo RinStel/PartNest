@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { matchPath, NavLink, Outlet, useLocation } from "react-router-dom";
-import { Icon } from "../components/ui/Icon";
+import { BrandMark, Icon } from "../components/ui/Icon";
 import { PageToolbar } from "../components/ui/PageToolbar";
 import { primaryRoutes } from "./routes";
 
@@ -92,16 +92,11 @@ function AppShellContent(): JSX.Element {
     >
       <aside className="pn-shell__sidebar">
         <div className="pn-shell__brand">
-          <span className="pn-shell__brand-name">PartNest</span>
-          <button
-            className="pn-button pn-button--icon pn-button--ghost pn-shell__toggle"
-            type="button"
-            aria-label={navigationExpanded ? "折叠导航" : "展开导航"}
-            title={navigationExpanded ? "折叠导航" : "展开导航"}
-            onClick={() => setNavigationExpanded((expanded) => !expanded)}
-          >
-            <Icon name="menu" size={16} />
-          </button>
+          {navigationExpanded ? <>
+            <BrandMark />
+            <span className="pn-shell__brand-name">PartNest</span>
+            <button className="pn-button pn-button--icon pn-button--ghost pn-shell__toggle" type="button" aria-label="折叠导航" title="折叠导航" onClick={() => setNavigationExpanded(false)}><Icon name="menu" size={16} /></button>
+          </> : <button className="pn-shell__brand-mark-button" type="button" aria-label="展开导航" title="展开导航" onClick={() => setNavigationExpanded(true)}><BrandMark /></button>}
         </div>
         <nav aria-label="主导航" className="pn-shell__nav">
           {primaryRoutes.map((candidate) => (

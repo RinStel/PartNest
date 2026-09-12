@@ -11,6 +11,14 @@ import "../styles/shell.css";
 afterEach(cleanup);
 
 describe("AppShell", () => {
+  it("keeps an accessible PartNest mark visible when navigation is collapsed", () => {
+    render(<App />);
+    expect(screen.getByRole("img", { name: "PartNest" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "折叠导航" }));
+    expect(screen.getByRole("img", { name: "PartNest" })).toBeVisible();
+    expect(screen.queryByText("PartNest")).not.toBeInTheDocument();
+  });
+
   it("collapses navigation without persistence and resets after remount", () => {
     const setItem = vi.spyOn(window.localStorage, "setItem");
     const { unmount } = render(<App />);

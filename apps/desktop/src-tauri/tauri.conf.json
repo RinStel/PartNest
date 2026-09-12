@@ -4,6 +4,37 @@
   "version": "0.1.0",
   "identifier": "com.partnest.desktop",
   "build": { "beforeDevCommand": "pnpm dev", "beforeBuildCommand": "pnpm build", "devUrl": "http://127.0.0.1:1420", "frontendDist": "../dist" },
-  "app": { "windows": [{ "title": "PartNest", "width": 1280, "height": 800, "minWidth": 960, "minHeight": 640 }], "security": { "csp": null, "assetProtocol": { "enable": true, "scope": ["$APPDATA/interactive-bom-cache/**"] } } },
-  "bundle": { "active": false }
+  "app": {
+    "windows": [{ "title": "PartNest", "width": 1280, "height": 800, "minWidth": 960, "minHeight": 640 }],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob: asset: http://asset.localhost https://asset.localhost",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost asset: http://asset.localhost https://asset.localhost",
+        "frame-src": "'self' asset: http://asset.localhost https://asset.localhost",
+        "worker-src": "'self' blob:",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'unsafe-inline' http://127.0.0.1:1420",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob: asset: http://asset.localhost https://asset.localhost",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost ws://127.0.0.1:1420 http://127.0.0.1:1420 asset: http://asset.localhost https://asset.localhost",
+        "frame-src": "'self' http://127.0.0.1:1420 asset: http://asset.localhost https://asset.localhost",
+        "worker-src": "'self' blob:",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      },
+      "assetProtocol": { "enable": true, "scope": ["$APPDATA/interactive-bom-cache/**"] }
+    }
+  },
+  "bundle": { "active": false, "icon": ["icons/icon.ico"] }
 }

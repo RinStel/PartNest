@@ -1,5 +1,5 @@
 use super::{lock_error, CommandError};
-use crate::{backup, db::Database};
+use crate::{backup, bom::cache::InteractiveBomRuntime, db::Database};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
@@ -26,6 +26,7 @@ pub fn restore_backup(
     app: AppHandle,
     backup_path: String,
     state: State<'_, Mutex<Database>>,
+    runtime: State<'_, Mutex<InteractiveBomRuntime>>,
 ) -> Result<(), CommandError> {
     if backup_path.trim().is_empty() {
         return Err(CommandError::Validation("请选择备份文件".into()));
@@ -38,5 +39,9 @@ pub fn restore_backup(
     }
     let mut database = state.lock().map_err(lock_error)?;
     backup::restore_database_file(&mut database, selected)?;
+    let runtime = runtime.lock().map_err(lock_error)?;
+    runtime
+        .invalidate_active_session()
+        .map_err(|error| CommandError::Database(error.to_string()))?;
     Ok(())
 }

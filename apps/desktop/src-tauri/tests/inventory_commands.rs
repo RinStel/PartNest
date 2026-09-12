@@ -1,9 +1,10 @@
 use partnest_desktop_lib::commands::boxes::{
-    create_box_service, delete_box_service, resize_box_service, update_box_service, BoxInput,
+    create_box_service, delete_box_service, list_boxes_service, resize_box_service,
+    update_box_service, BoxInput,
 };
 use partnest_desktop_lib::commands::parts::{
-    adjust_stock_service, create_part_service, delete_part_service, list_parts_service,
-    update_part_service, PartInput,
+    adjust_stock_service, create_part_service, delete_part_service, format_lcsc_display_name,
+    list_parts_service, lookup_lcsc_with_fetcher, update_part_service, LcscPartInfo, PartInput,
 };
 use partnest_desktop_lib::commands::CommandError;
 use partnest_desktop_lib::db::{new_id, Database};
@@ -21,7 +22,7 @@ fn box_input(rows: i64, cols: i64) -> BoxInput {
     }
 }
 
-fn part_input(box_id: &str, slot: &str, quantity: i64) -> PartInput {
+fn part_input(box_id: impl ToString, slot: &str, quantity: i64) -> PartInput {
     PartInput {
         name: "10k resistor".into(),
         category: "resistor".into(),
@@ -30,8 +31,8 @@ fn part_input(box_id: &str, slot: &str, quantity: i64) -> PartInput {
         mpn: "R-10K".into(),
         lcsc_code: "C123".into(),
         quantity,
-        box_id: box_id.into(),
-        slot: slot.into(),
+        box_id: Some(box_id.to_string().parse().expect("integer box id")),
+        slot: Some(slot.into()),
         note: "test".into(),
     }
 }
@@ -41,18 +42,18 @@ fn create_part_normalizes_slot_and_rejects_out_of_range_positions() {
     let db = database();
     let box_record = create_box_service(&db, box_input(2, 100)).unwrap();
 
-    let part = create_part_service(&db, part_input(&box_record.id, "a0", 2)).unwrap();
-    assert_eq!(part.slot, "A0");
-    let mut multi_input = part_input(&box_record.id, "a10", 2);
+    let part = create_part_service(&db, part_input(box_record.id, "a0", 2)).unwrap();
+    assert_eq!(part.slot.as_deref(), Some("A0"));
+    let mut multi_input = part_input(box_record.id, "a10", 2);
     multi_input.lcsc_code = "C124".into();
     let multi_digit = create_part_service(&db, multi_input).unwrap();
-    assert_eq!(multi_digit.slot, "A10");
+    assert_eq!(multi_digit.slot.as_deref(), Some("A10"));
 
-    assert!(create_part_service(&db, part_input(&box_record.id, "C0", 1)).is_err());
-    assert!(create_part_service(&db, part_input(&box_record.id, "A100", 1)).is_err());
+    assert!(create_part_service(&db, part_input(box_record.id, "C0", 1)).is_err());
+    assert!(create_part_service(&db, part_input(box_record.id, "A100", 1)).is_err());
     for invalid in ["A01", "A+1", "A-0", "A１", "Ａ1", "é1", "盒1"] {
         assert!(
-            create_part_service(&db, part_input(&box_record.id, invalid, 1)).is_err(),
+            create_part_service(&db, part_input(box_record.id, invalid, 1)).is_err(),
             "{invalid}"
         );
     }
@@ -70,9 +71,38 @@ fn create_part_accepts_a_trimmed_box_identifier() {
         },
     )
     .unwrap();
-    let part =
-        create_part_service(&db, part_input(&format!("  {}  ", box_record.id), "A0", 1)).unwrap();
-    assert_eq!(part.box_id, box_record.id);
+    let part = create_part_service(&db, part_input(box_record.id, "A0", 1)).unwrap();
+    assert_eq!(part.box_id, Some(box_record.id));
+}
+
+#[test]
+fn create_and_update_parts_store_canonical_lcsc_codes() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
+    let mut input = part_input(box_record.id, "A0", 1);
+    input.lcsc_code = " c123 ".into();
+    let part = create_part_service(&db, input.clone()).unwrap();
+    assert_eq!(part.lcsc_code.as_deref(), Some("C123"));
+
+    input.lcsc_code = " c124 ".into();
+    let updated = update_part_service(&db, &part.id, part.version, input).unwrap();
+    assert_eq!(updated.lcsc_code.as_deref(), Some("C124"));
+}
+
+#[test]
+fn canonical_lcsc_codes_are_unique_case_insensitively() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
+    let mut first = part_input(box_record.id, "A0", 1);
+    first.lcsc_code = "C123".into();
+    create_part_service(&db, first).unwrap();
+    let mut duplicate = part_input(box_record.id, "A1", 1);
+    duplicate.lcsc_code = " c123 ".into();
+
+    assert!(matches!(
+        create_part_service(&db, duplicate),
+        Err(CommandError::Constraint(_))
+    ));
 }
 
 #[test]
@@ -85,9 +115,9 @@ fn box_rejects_more_than_one_hundred_columns() {
 fn resize_rejects_shrinking_away_an_occupied_slot() {
     let db = database();
     let box_record = create_box_service(&db, box_input(10, 10)).unwrap();
-    create_part_service(&db, part_input(&box_record.id, "A9", 1)).unwrap();
+    create_part_service(&db, part_input(box_record.id, "A9", 1)).unwrap();
 
-    let error = resize_box_service(&db, &box_record.id, 2, 2).unwrap_err();
+    let error = resize_box_service(&db, box_record.id, 2, 2).unwrap_err();
     assert_eq!(error.to_string(), "目标规格包含不了已占用盒位 A9");
 }
 
@@ -95,17 +125,17 @@ fn resize_rejects_shrinking_away_an_occupied_slot() {
 fn duplicate_slot_is_rejected() {
     let db = database();
     let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
-    create_part_service(&db, part_input(&box_record.id, "A0", 1)).unwrap();
-    assert!(create_part_service(&db, part_input(&box_record.id, "a0", 1)).is_err());
+    create_part_service(&db, part_input(box_record.id, "A0", 1)).unwrap();
+    assert!(create_part_service(&db, part_input(box_record.id, "a0", 1)).is_err());
 }
 
 #[test]
 fn stale_version_update_returns_conflict() {
     let db = database();
     let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
-    let part = create_part_service(&db, part_input(&box_record.id, "A0", 1)).unwrap();
+    let part = create_part_service(&db, part_input(box_record.id, "A0", 1)).unwrap();
 
-    let mut changed = part_input(&box_record.id, "A0", 99);
+    let mut changed = part_input(box_record.id, "A0", 99);
     changed.name = "updated".into();
     let updated = update_part_service(&db, &part.id, part.version, changed.clone()).unwrap();
     assert_eq!(updated.version, part.version + 1);
@@ -120,8 +150,8 @@ fn stale_version_update_returns_conflict() {
 fn list_parts_filters_by_name_and_mpn() {
     let db = database();
     let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
-    create_part_service(&db, part_input(&box_record.id, "A0", 1)).unwrap();
-    let mut other = part_input(&box_record.id, "A1", 1);
+    create_part_service(&db, part_input(box_record.id, "A0", 1)).unwrap();
+    let mut other = part_input(box_record.id, "A1", 1);
     other.name = "capacitor".into();
     other.mpn = "C-100".into();
     other.lcsc_code = "C125".into();
@@ -136,7 +166,7 @@ fn list_parts_filters_by_name_and_mpn() {
 fn stock_adjustment_rejects_negative_inventory_and_writes_audit_row() {
     let db = database();
     let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
-    let part = create_part_service(&db, part_input(&box_record.id, "A0", 1)).unwrap();
+    let part = create_part_service(&db, part_input(box_record.id, "A0", 1)).unwrap();
 
     assert!(adjust_stock_service(&db, &part.id, -2, "consume").is_err());
     let adjusted = adjust_stock_service(&db, &part.id, 3, "restock").unwrap();
@@ -167,7 +197,7 @@ fn stock_adjustment_rejects_negative_inventory_and_writes_audit_row() {
 fn create_part_audits_nonzero_initial_stock_atomically() {
     let db = database();
     let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
-    let part = create_part_service(&db, part_input(&box_record.id, "A0", 7)).unwrap();
+    let part = create_part_service(&db, part_input(box_record.id, "A0", 7)).unwrap();
     assert_eq!(
         db.connection()
             .query_row(
@@ -181,22 +211,72 @@ fn create_part_audits_nonzero_initial_stock_atomically() {
 }
 
 #[test]
+fn boxes_use_integer_ids_and_zero_stock_releases_its_location() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
+    assert!(box_record.id > 0);
+    let part = create_part_service(&db, part_input(box_record.id.to_string(), "A0", 1)).unwrap();
+
+    let cleared = adjust_stock_service(&db, &part.id, -1, "消耗").unwrap();
+    assert_eq!(cleared.quantity, 0);
+    assert_eq!(cleared.box_id, None);
+    assert_eq!(cleared.slot, None);
+    assert!(list_parts_service(&db, None)
+        .unwrap()
+        .iter()
+        .all(|item| item.slot.is_none()));
+    let replenished = adjust_stock_service(&db, &part.id, 2, "补库").unwrap();
+    assert_eq!(replenished.quantity, 2);
+    assert_eq!(replenished.box_id, None);
+    assert_eq!(replenished.slot, None);
+    assert!(list_boxes_service(&db).unwrap()[0]
+        .occupied_slots
+        .is_empty());
+}
+
+#[test]
+fn updating_part_moves_between_boxes_and_rejects_an_occupied_destination() {
+    let db = database();
+    let first_box = create_box_service(&db, box_input(2, 2)).unwrap();
+    let second_box = create_box_service(&db, box_input(2, 2)).unwrap();
+    let first = create_part_service(&db, part_input(first_box.id, "A0", 2)).unwrap();
+    let mut second_input = part_input(second_box.id, "A0", 2);
+    second_input.lcsc_code = "C997".into();
+    let _second = create_part_service(&db, second_input).unwrap();
+
+    let mut moved_input = part_input(second_box.id, "B1", 2);
+    moved_input.name = first.name.clone();
+    moved_input.lcsc_code = "C999".into();
+    let moved = update_part_service(&db, &first.id, first.version, moved_input).unwrap();
+    assert_eq!(moved.box_id, Some(second_box.id));
+    assert_eq!(moved.slot.as_deref(), Some("B1"));
+
+    let mut conflict_input = part_input(second_box.id, "A0", 2);
+    conflict_input.name = moved.name;
+    conflict_input.lcsc_code = "C998".into();
+    assert!(matches!(
+        update_part_service(&db, &moved.id, moved.version, conflict_input),
+        Err(CommandError::Constraint(_))
+    ));
+}
+
+#[test]
 fn part_and_box_deletion_rejects_audited_or_occupied_records() {
     let db = database();
     let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
-    let part = create_part_service(&db, part_input(&box_record.id, "A0", 1)).unwrap();
+    let part = create_part_service(&db, part_input(box_record.id, "A0", 1)).unwrap();
     assert!(matches!(
         delete_part_service(&db, &part.id),
         Err(CommandError::Constraint(_))
     ));
     assert!(matches!(
-        delete_box_service(&db, &box_record.id),
+        delete_box_service(&db, box_record.id),
         Err(CommandError::Constraint(_))
     ));
     let empty_box = create_box_service(&db, box_input(1, 1)).unwrap();
     let renamed = update_box_service(
         &db,
-        &empty_box.id,
+        empty_box.id,
         BoxInput {
             name: "Renamed".into(),
             rows: 1,
@@ -205,7 +285,7 @@ fn part_and_box_deletion_rejects_audited_or_occupied_records() {
     )
     .unwrap();
     assert_eq!(renamed.name, "Renamed");
-    delete_box_service(&db, &empty_box.id).unwrap();
+    delete_box_service(&db, empty_box.id).unwrap();
 }
 
 #[test]
@@ -228,4 +308,41 @@ fn deleting_legacy_positive_stock_is_rejected_without_an_audit_row() {
         delete_part_service(&db, &legacy_id),
         Err(CommandError::Constraint(_))
     ));
+}
+
+#[test]
+fn lcsc_lookup_prefers_the_network_and_falls_back_to_its_cached_metadata() {
+    let db = database();
+    let fetched = lookup_lcsc_with_fetcher(&db, " c1549 ", |code| {
+        assert_eq!(code, "C1549");
+        Ok(LcscPartInfo {
+            lcsc_code: code.into(),
+            name: "0402CG180J500NT".into(),
+            category: "Capacitors".into(),
+            package: "0402".into(),
+            manufacturer: "FH".into(),
+            mpn: "0402CG180J500NT".into(),
+        })
+    })
+    .expect("network lookup");
+    assert_eq!(fetched.lcsc_code, "C1549");
+    let cached =
+        lookup_lcsc_with_fetcher(&db, "C1549", |_| Err("offline".into())).expect("cached lookup");
+    assert_eq!(cached, fetched);
+}
+
+#[test]
+fn lcsc_display_name_combines_resistance_and_package() {
+    assert_eq!(
+        format_lcsc_display_name("5.1kΩ ±1% 1/16W", "R0402"),
+        "5.1kΩ R0402"
+    );
+}
+
+#[test]
+fn lcsc_display_name_keeps_an_unrecognized_model_unchanged() {
+    assert_eq!(
+        format_lcsc_display_name("RC0402FR-075K1L", "R0402"),
+        "RC0402FR-075K1L"
+    );
 }

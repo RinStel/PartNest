@@ -8,6 +8,7 @@ export type ComponentTrayProps = {
   widths: Record<string, number>;
   onResizeStart: (column: string, event: MouseEvent) => void;
   onResizeKey: (column: string, delta: number) => void;
+  onSelectDesignators: (designators: string[]) => void;
   collapsed: boolean;
   onToggle: () => void;
 };
@@ -24,7 +25,7 @@ function groupDesignators(group: BomGroup, side: BomSide | "all") {
   return group.placements.filter((placement) => placement.side === side).map((placement) => placement.designator);
 }
 
-export function ComponentTray({ groups, side, activeComponentKey, widths, onResizeStart, onResizeKey, collapsed, onToggle }: ComponentTrayProps) {
+export function ComponentTray({ groups, side, activeComponentKey, widths, onResizeStart, onResizeKey, onSelectDesignators, collapsed, onToggle }: ComponentTrayProps) {
   const resizeButton = (column: string, label: string) => <button
     type="button"
     role="separator"
@@ -55,7 +56,8 @@ export function ComponentTray({ groups, side, activeComponentKey, widths, onResi
       </div>
       {groups.map((group) => {
         const designators = groupDesignators(group, side);
-        return <div className="component-tray__row" role="row" key={group.component_key} data-testid={`tray-row-${group.component_key}`} data-active={group.component_key === activeComponentKey ? "true" : "false"}>
+        const selectable = side !== "all" && designators.length > 0;
+        return <div className="component-tray__row" role="row" key={group.component_key} data-testid={`tray-row-${group.component_key}`} data-active={group.component_key === activeComponentKey ? "true" : "false"} data-selectable={selectable ? "true" : "false"} tabIndex={selectable ? 0 : undefined} aria-label={selectable ? `${group.name || group.value}，选择 ${designators.join(", ")}` : undefined} onClick={() => selectable && onSelectDesignators(designators)} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onSelectDesignators(designators); } }}>
           <div className="component-tray__cell" role="cell" data-testid={group.component_key === activeComponentKey ? "component-cell" : undefined} style={{ width: widths.component }}>{group.name || group.value}</div>
           <div className="component-tray__cell" role="cell" style={{ width: widths.package }}>{group.package || "—"}</div>
           <div className="component-tray__cell" role="cell" style={{ width: widths.quantity }}>{designators.length}</div>

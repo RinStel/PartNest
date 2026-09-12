@@ -14,6 +14,7 @@ export function BomAnalysisTable({ rows, onConfirmMatch }: { rows: BomAnalysisRo
     { id: "shortage", header: "缺料", width: 80, cell: (row) => <StatusBadge tone={row.shortage > 0 ? "danger" : "success"}>{row.shortage}</StatusBadge> },
     { id: "match", header: "匹配状态", width: 220, cell: (row) => <div className="bom-match-cell">
       <StatusBadge tone={statusTone[row.status]}>{statusLabel[row.status]}</StatusBadge>
+      {row.confirmed && <StatusBadge tone="active">已确认</StatusBadge>}
       {row.status === "candidate" && row.candidateIds?.map((id) => <button className="pn-button pn-button--ghost" key={id} type="button" onClick={() => onConfirmMatch(row.componentKey, id)}>确认匹配</button>)}
     </div> },
     { id: "box", header: "盒位", width: 120, cell: (row) => row.boxSlot ?? "—" },

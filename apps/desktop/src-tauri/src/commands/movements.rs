@@ -100,22 +100,29 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
     let mut result = Vec::new();
     for row in rows {
         let movement = row?;
-        let (before_quantity, after_quantity) =
-            if movement.before_quantity.is_some() && movement.after_quantity.is_some() {
-                (movement.before_quantity, movement.after_quantity)
-            } else if let Some(part_id) = &movement.part_id {
-                let after = stock
-                    .get(part_id)
-                    .copied()
-                    .ok_or_else(|| CommandError::Database("流水关联的器件不存在".into()))?;
-                let before = after
-                    .checked_sub(movement.quantity)
-                    .ok_or_else(|| CommandError::Database("流水库存数量超出范围".into()))?;
+        let (before_quantity, after_quantity) = if movement.before_quantity.is_some()
+            && movement.after_quantity.is_some()
+        {
+            // The list is newest-first. A modern audited row still has to
+            // rewind the cursor to its `before` value so older nullable
+            // rows are reconstructed against the correct historical stock.
+            if let (Some(part_id), Some(before)) = (&movement.part_id, movement.before_quantity) {
                 stock.insert(part_id.clone(), before);
-                (Some(before), Some(after))
-            } else {
-                (None, None)
-            };
+            }
+            (movement.before_quantity, movement.after_quantity)
+        } else if let Some(part_id) = &movement.part_id {
+            let after = stock
+                .get(part_id)
+                .copied()
+                .ok_or_else(|| CommandError::Database("流水关联的器件不存在".into()))?;
+            let before = after
+                .checked_sub(movement.quantity)
+                .ok_or_else(|| CommandError::Database("流水库存数量超出范围".into()))?;
+            stock.insert(part_id.clone(), before);
+            (Some(before), Some(after))
+        } else {
+            (None, None)
+        };
         let reversible = movement.movement_type == "consume"
             && movement.quantity < 0
             && movement.reverses_movement_id.is_none()

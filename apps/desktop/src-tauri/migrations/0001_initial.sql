@@ -56,7 +56,7 @@ CREATE TABLE welding_progress (
     side TEXT NOT NULL CHECK (side IN ('top', 'bottom')),
     part_id TEXT,
     required_quantity INTEGER NOT NULL CHECK (required_quantity >= 0),
-    taken_quantity INTEGER NOT NULL CHECK (taken_quantity >= 0 AND taken_quantity <= required_quantity),
+    taken_quantity INTEGER NOT NULL CHECK (taken_quantity >= 0),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (session_id) REFERENCES welding_sessions(id) ON DELETE CASCADE,
     FOREIGN KEY (part_id) REFERENCES parts(id) ON DELETE SET NULL,

@@ -1,5 +1,7 @@
 use partnest_desktop_lib::bom::bridge::BridgeError;
-use partnest_desktop_lib::bom::cache::{CacheError, InteractiveBomCache, SelectionError};
+use partnest_desktop_lib::bom::cache::{
+    preview_interactive_bom, CacheError, InteractiveBomCache, InteractiveBomRuntime, SelectionError,
+};
 use partnest_desktop_lib::bom::types::BomSide;
 use partnest_desktop_lib::db::Database;
 use sha2::{Digest, Sha256};
@@ -9,6 +11,66 @@ use tempfile::tempdir;
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/bom/interactive-minimal.html")
+}
+
+fn cache_entries(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .map(|entries| entries.count())
+        .unwrap_or(0)
+}
+
+fn active_sessions(db: &Database) -> i64 {
+    db.connection()
+        .query_row(
+            "SELECT COUNT(*) FROM welding_sessions WHERE status = 'active'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn previewing_an_interactive_bom_caches_nothing_and_keeps_the_active_session() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache_dir = root.path().join("cache");
+    let active = InteractiveBomCache::new(&db, &cache_dir)
+        .cache_interactive_bom(fixture(), "Fixture")
+        .unwrap();
+    let before = cache_entries(&cache_dir);
+
+    let bom = preview_interactive_bom(&fixture(), None).unwrap();
+
+    assert_eq!(bom.groups[0].designators, ["R1", "R2", "R3"]);
+    assert_eq!(
+        cache_entries(&cache_dir),
+        before,
+        "previewing must not write another cached copy"
+    );
+    assert_eq!(active_sessions(&db), 1);
+    let restored = InteractiveBomCache::new(&db, &cache_dir)
+        .restore_active_session()
+        .unwrap()
+        .expect("the analysed session stays active");
+    assert_eq!(restored.session_id, active.session_id);
+    assert_eq!(restored.bom_file_id, active.bom_file_id);
+}
+
+#[test]
+fn restoring_a_deleted_cache_file_asks_the_operator_to_pick_the_bom_again() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache_dir = root.path().join("cache");
+    let session = InteractiveBomCache::new(&db, &cache_dir)
+        .cache_interactive_bom(fixture(), "Fixture")
+        .unwrap();
+    fs::remove_file(&session.cache_path).unwrap();
+
+    let error = InteractiveBomCache::new(&db, &cache_dir)
+        .restore_active_session()
+        .expect_err("a deleted cache copy must be reported, not silently ignored");
+    assert!(matches!(error, CacheError::MissingCache(_)));
+    assert!(error.user_message().contains("重新选择"));
 }
 
 #[test]
@@ -25,6 +87,8 @@ fn caches_atomic_copy_with_hash_name_and_bridge_marker() {
     assert!(session.cache_path.is_file());
     let cached = fs::read_to_string(&session.cache_path).unwrap();
     assert!(cached.contains("bridge-v1"));
+    assert!(cached.contains("MutationObserver"));
+    assert!(cached.contains("data-designator"));
     assert_eq!(session.normalized.groups[0].designators, ["R1", "R2", "R3"]);
     assert_eq!(
         session.normalized.groups[0]
@@ -144,6 +208,23 @@ fn does_not_restore_an_inactive_session_after_runtime_restart() {
 }
 
 #[test]
+fn invalidating_runtime_rejects_the_previous_bom_authorization() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let runtime = InteractiveBomRuntime::new(root.path().join("cache"));
+    let session = runtime
+        .cache_interactive_bom(&db, fixture(), "Fixture")
+        .unwrap();
+
+    runtime.invalidate_active_session().unwrap();
+
+    assert!(matches!(
+        runtime.resolve_bom_selection(&db, &session.token, &["R1".into()]),
+        Err(BridgeError::InactiveSession)
+    ));
+}
+
+#[test]
 fn resolver_authoritatively_rejects_oversized_direct_inputs() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
@@ -235,6 +316,36 @@ fn identical_hash_reimport_updates_remark_and_keeps_one_current_session() {
             .unwrap(),
         "cancelled"
     );
+}
+
+#[test]
+fn companion_metadata_is_cached_and_restored_without_schema_changes() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let source = root.path().join("board.html");
+    fs::write(
+        &source,
+        r#"<script>window.files = {"bom_merge":{"data":{"comp_info":{"C1":{"Name":"R"}},"designator_info":{"top":[{"des":"R1","lc_code":""}],"bottom":[]}}}};</script>"#,
+    )
+    .unwrap();
+    let companion = root.path().join("board.csv");
+    fs::write(
+        &companion,
+        "Quantity,Comment,Designator,Footprint,Value,Manufacturer Part,Manufacturer,Supplier Part\n1,10k,R1,0603,10k,R-10K,Acme,C999\n",
+    )
+    .unwrap();
+    let cache_dir = root.path().join("cache");
+    let first = InteractiveBomCache::new(&db, &cache_dir)
+        .cache_interactive_bom_with_companion(&source, "Board", Some(&companion))
+        .unwrap();
+    assert_eq!(first.normalized.groups[0].lcsc_code, "C999");
+    assert!(fs::read_to_string(&first.cache_path)
+        .unwrap()
+        .contains("data-partnest-companion=\"bom-v1\""));
+
+    let restarted = InteractiveBomCache::new(&db, &cache_dir);
+    let restored = restarted.restore_active_session().unwrap().unwrap();
+    assert_eq!(restored.normalized.groups[0].lcsc_code, "C999");
 }
 
 fn hash(path: &Path) -> String {

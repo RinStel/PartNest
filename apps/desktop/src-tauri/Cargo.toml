@@ -17,6 +17,7 @@ csv = "1.4.0"
 encoding_rs = "0.8.35"
 hex = "0.4.3"
 rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
@@ -25,3 +26,16 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.7.0"
 uuid = { version = "1.24.1", features = ["v4", "v7"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
+# 发布构建：收敛为单一代码生成单元并开启薄 LTO，兼顾体积与速度；
+# 同时去除调试符号，避免随安装包泄露源码路径。不改变 panic 行为，
+# 以免静默改变崩溃时的现象。
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = "s"
+strip = true
+
+# 仓库内的 unsafe 仅限必要的 Win32 句柄调用，禁止隐式 unsafe 函数体。
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

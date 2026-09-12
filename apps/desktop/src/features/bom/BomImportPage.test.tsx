@@ -8,7 +8,7 @@ afterEach(cleanup);
 
 const part = (overrides: Partial<Part> = {}): Part => ({
   id: "part-1", name: "10k", category: "", package: "0603", manufacturer: "", mpn: "", lcsc_code: "C1", quantity: 3,
-  box_id: "box-1", slot: "A0", note: "", version: 1, ...overrides,
+  box_id: 1, slot: "A0", note: "", version: 1, ...overrides,
 });
 
 const ready = {
@@ -22,6 +22,7 @@ const ready = {
 function api(overrides: Partial<BomImportApi> = {}): BomImportApi {
   return {
     inspectTabularBom: vi.fn().mockResolvedValue(ready),
+    previewInteractiveBom: vi.fn().mockResolvedValue(ready),
     cacheInteractiveBom: vi.fn(),
     listParts: vi.fn().mockResolvedValue([part()]),
     ...overrides,
@@ -33,6 +34,13 @@ function renderPage(ui: JSX.Element) {
 }
 
 describe("BomImportPage", () => {
+  it("gives an unloaded BOM a compact empty workspace", () => {
+    renderPage(<BomImportPage api={api()} pickFile={vi.fn()} />);
+    const workspace = screen.getByRole("region", { name: "BOM 分析" });
+    expect(workspace).toHaveClass("bom-empty-state");
+    expect(workspace).toHaveTextContent("未加载 BOM");
+  });
+
   it("restricts the picker to supported BOM formats and reports unsupported files", async () => {
     const pickFile = vi.fn().mockResolvedValue("board.txt");
     renderPage(<BomImportPage api={api()} pickFile={pickFile} />);
@@ -54,22 +62,62 @@ describe("BomImportPage", () => {
     expect(fields[1]).toHaveValue("");
   });
 
-  it("turns the cached interactive HTML normalized payload into analysis rows", async () => {
-    const cacheInteractiveBom = vi.fn().mockResolvedValue({ normalized: ready.bom });
-    const apiMock = api({ cacheInteractiveBom });
-    renderPage(<BomImportPage api={apiMock} pickFile={vi.fn().mockResolvedValue("board.html")} />);
+  it("analyses an interactive HTML BOM without caching it", async () => {
+    const previewInteractiveBom = vi.fn().mockResolvedValue(ready);
+    const cacheInteractiveBom = vi.fn();
+    renderPage(<BomImportPage api={api({ previewInteractiveBom, cacheInteractiveBom })} pickFile={vi.fn().mockResolvedValue("board.html")} />);
     fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
     expect(await screen.findByText("缺料分析")).toBeInTheDocument();
-    expect(cacheInteractiveBom).toHaveBeenCalledWith("board.html", "board.html");
+    expect(previewInteractiveBom).toHaveBeenCalledWith("board.html");
+    expect(cacheInteractiveBom).not.toHaveBeenCalled();
+    expect(screen.getByText("仅完成分析")).toBeInTheDocument();
   });
 
-  it("passes an edited BOM remark name when importing interactive HTML", async () => {
+  it("caches the interactive BOM only when it is made active", async () => {
+    const cacheInteractiveBom = vi.fn().mockResolvedValue({ normalized: ready.bom });
+    renderPage(<BomImportPage api={api({ cacheInteractiveBom })} pickFile={vi.fn().mockResolvedValue("board.html")} />);
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    await screen.findByText("缺料分析");
+    fireEvent.click(screen.getByRole("button", { name: "设为活动 BOM" }));
+    await waitFor(() => expect(cacheInteractiveBom).toHaveBeenCalledWith("board.html", "board.html"));
+    expect(await screen.findByText("已设为活动 BOM")).toBeInTheDocument();
+  });
+
+  it("shows import stages and an analysis summary when the BOM is ready", async () => {
+    const inspectTabularBom = vi.fn().mockResolvedValue(ready);
+    renderPage(<BomImportPage api={api({ inspectTabularBom })} pickFile={vi.fn().mockResolvedValue("board.csv")} />);
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    expect(await screen.findByRole("navigation", { name: "BOM 导入流程" })).toBeVisible();
+    expect(screen.getByText("1 个器件组")).toBeVisible();
+    expect(screen.getByText("1 个位号")).toBeVisible();
+    expect(screen.getByText("1 个缺料组")).toBeVisible();
+  });
+
+  it("passes an edited BOM remark name when activating interactive HTML", async () => {
     const cacheInteractiveBom = vi.fn().mockResolvedValue({ normalized: ready.bom });
     renderPage(<BomImportPage api={api({ cacheInteractiveBom })} pickFile={vi.fn().mockResolvedValue("board.html")} />);
     fireEvent.change(screen.getByLabelText("BOM备注名"), { target: { value: "我的板子" } });
     fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
     await screen.findByText("缺料分析");
-    expect(cacheInteractiveBom).toHaveBeenCalledWith("board.html", "我的板子");
+    fireEvent.click(screen.getByRole("button", { name: "设为活动 BOM" }));
+    await waitFor(() => expect(cacheInteractiveBom).toHaveBeenCalledWith("board.html", "我的板子"));
+  });
+
+  it("attaches a companion CSV when analyzing and activating interactive HTML", async () => {
+    const previewInteractiveBom = vi.fn().mockResolvedValue(ready);
+    const cacheInteractiveBom = vi.fn().mockResolvedValue({ normalized: ready.bom });
+    renderPage(<BomImportPage
+      api={api({ previewInteractiveBom, cacheInteractiveBom })}
+      pickFile={vi.fn().mockResolvedValue("board.html")}
+      pickCompanionFile={vi.fn().mockResolvedValue("board.csv")}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    expect(await screen.findByRole("button", { name: "配套 CSV" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "配套 CSV" }));
+    await waitFor(() => expect(previewInteractiveBom).toHaveBeenLastCalledWith("board.html", "board.csv"));
+    expect(screen.getByTitle("board.csv")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "设为活动 BOM" }));
+    await waitFor(() => expect(cacheInteractiveBom).toHaveBeenLastCalledWith("board.html", "board.html", "board.csv"));
   });
 
   it("analyzes exact, candidate, and unmatched groups with non-negative shortages", async () => {
@@ -107,6 +155,7 @@ describe("BomImportPage", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "确认匹配" })[0]);
     await waitFor(() => expect(screen.queryByText("候选匹配")).not.toBeInTheDocument());
     expect(screen.getByText("精确匹配")).toBeInTheDocument();
+    expect(screen.getByText("已确认")).toBeInTheDocument();
   });
 
   it("keeps import controls in the toolbar and opens mapping as a dialog", async () => {

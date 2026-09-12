@@ -5,7 +5,7 @@ use partnest_desktop_lib::db::{new_id, Database};
 use rusqlite::params;
 use tempfile::tempdir;
 
-fn part_input(box_id: &str) -> PartInput {
+fn part_input(box_id: impl ToString) -> PartInput {
     PartInput {
         name: "10k resistor".into(),
         category: "resistor".into(),
@@ -14,8 +14,8 @@ fn part_input(box_id: &str) -> PartInput {
         mpn: "R-10K".into(),
         lcsc_code: "C123".into(),
         quantity: 13,
-        box_id: box_id.into(),
-        slot: "A0".into(),
+        box_id: Some(box_id.to_string().parse().expect("integer box id")),
+        slot: Some("A0".into()),
         note: "test".into(),
     }
 }
@@ -33,7 +33,7 @@ fn movements_are_newest_first_with_stock_before_after_and_reversal_visibility() 
         },
     )
     .unwrap();
-    let part = create_part_service(&db, part_input(&box_record.id)).unwrap();
+    let part = create_part_service(&db, part_input(box_record.id)).unwrap();
     // This fixture supplies its own historical movement timeline.
     db.connection()
         .execute(
@@ -117,4 +117,44 @@ fn movement_ids_are_not_required_to_be_uuid_values() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join(format!("{}.db", new_id()))).unwrap();
     assert!(list_movements_service(&db).unwrap().is_empty());
+}
+
+#[test]
+fn legacy_movement_reconstruction_rewinds_past_modern_audit_rows() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let box_record = create_box_service(
+        &db,
+        BoxInput {
+            name: "Bench".into(),
+            rows: 2,
+            cols: 2,
+        },
+    )
+    .unwrap();
+    let part = create_part_service(&db, part_input(box_record.id)).unwrap();
+    db.connection()
+        .execute(
+            "DELETE FROM inventory_movements WHERE part_id = ?1",
+            params![part.id],
+        )
+        .unwrap();
+    db.connection().execute(
+        "INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason, created_at) VALUES ('legacy-in', ?1, 'in', 5, 'legacy stock', '2026-01-01T00:00:00.000Z')",
+        params![part.id],
+    ).unwrap();
+    db.connection().execute(
+        "INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason, before_quantity, after_quantity, movement_sequence, created_at) VALUES ('modern-consume', ?1, 'consume', -2, 'welding take', 15, 13, 2, '2026-01-02T00:00:00.000Z')",
+        params![part.id],
+    ).unwrap();
+
+    let movements = list_movements_service(&db).unwrap();
+    let legacy = movements
+        .iter()
+        .find(|item| item.id == "legacy-in")
+        .unwrap();
+    assert_eq!(
+        (legacy.before_quantity, legacy.after_quantity),
+        (Some(10), Some(15))
+    );
 }

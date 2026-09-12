@@ -2,7 +2,10 @@
 
 use super::{
     bridge::{constant_time_eq, validate_token_and_designators, BridgeError},
-    interactive_html::InteractiveHtmlError,
+    interactive_html::{
+        parse_interactive_html_text_with_companion, InteractiveHtmlError, MAX_INTERACTIVE_BOM_BYTES,
+    },
+    tabular::parse_tabular_bom,
     types::{BomSide, NormalizedBomDto},
 };
 use crate::db::{new_id, Database};
@@ -20,6 +23,9 @@ use uuid::Uuid;
 pub use super::bridge::SelectionError;
 
 const BRIDGE_JS: &str = include_str!("../../resources/bridge-v1.js");
+const COMPANION_START: &[u8] =
+    b"<script data-partnest-companion=\"bom-v1\" type=\"application/json\">";
+const COMPANION_END: &[u8] = b"</script>";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CachedBomSession {
@@ -50,6 +56,8 @@ pub enum CacheError {
     InvalidDisplayName,
     TamperedCache(String),
     AtomicReplace(String),
+    Companion(String),
+    MissingCache(String),
 }
 impl fmt::Display for CacheError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -60,10 +68,32 @@ impl fmt::Display for CacheError {
             Self::InvalidDisplayName => f.write_str("display name cannot be empty"),
             Self::TamperedCache(reason) => write!(f, "cached BOM is invalid: {reason}"),
             Self::AtomicReplace(reason) => write!(f, "cached BOM atomic replace failed: {reason}"),
+            Self::Companion(reason) => write!(f, "companion CSV error: {reason}"),
+            Self::MissingCache(name) => {
+                write!(f, "cached BOM file for {name:?} is not available")
+            }
         }
     }
 }
 impl std::error::Error for CacheError {}
+
+impl CacheError {
+    /// Reader-facing text; `Display` keeps the English form for logs.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Parse(error) => error.user_message(),
+            Self::MissingCache(_) => {
+                "活动 BOM 的缓存文件已丢失，请在「BOM 分析」页重新选择该 BOM 文件".into()
+            }
+            Self::TamperedCache(_) => "缓存的 BOM 已损坏，请在「BOM 分析」页重新导入该 BOM".into(),
+            Self::InvalidDisplayName => "BOM 备注名不能为空".into(),
+            Self::Companion(reason) => format!("配套 CSV 解析失败：{reason}"),
+            Self::AtomicReplace(reason) => format!("写入 BOM 缓存失败：{reason}"),
+            Self::Io(error) => format!("BOM 缓存读写失败：{error}"),
+            Self::Database(error) => format!("BOM 会话保存失败：{error}"),
+        }
+    }
+}
 impl From<std::io::Error> for CacheError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
@@ -124,6 +154,17 @@ impl InteractiveBomRuntime {
             .cache_interactive_bom(source_path, display_name)
     }
 
+    pub fn cache_interactive_bom_with_companion(
+        &self,
+        db: &Database,
+        source_path: impl AsRef<Path>,
+        display_name: impl AsRef<str>,
+        companion_path: Option<&Path>,
+    ) -> Result<CachedBomSession, CacheError> {
+        InteractiveBomCache::with_active(db, &self.cache_dir, self.active.clone())
+            .cache_interactive_bom_with_companion(source_path, display_name, companion_path)
+    }
+
     pub fn resolve_bom_selection(
         &self,
         db: &Database,
@@ -140,6 +181,17 @@ impl InteractiveBomRuntime {
     ) -> Result<Option<CachedBomSession>, CacheError> {
         InteractiveBomCache::with_active(db, &self.cache_dir, self.active.clone())
             .restore_active_session()
+    }
+
+    /// Drop the in-memory bridge token and designator bindings after the
+    /// backing database has been replaced by a restore operation.
+    pub fn invalidate_active_session(&self) -> Result<(), CacheError> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| CacheError::Io(std::io::Error::other("session lock poisoned")))?;
+        *active = None;
+        Ok(())
     }
 
     /// Validate the ownership captured by the active BOM bridge before a
@@ -173,7 +225,11 @@ impl InteractiveBomRuntime {
             return Err(BridgeError::InactiveSession);
         }
         validate_token_and_designators("welding-selection", designators)?;
+        let mut submitted = std::collections::HashSet::with_capacity(designators.len());
         for designator in designators {
+            if !submitted.insert(designator) {
+                return Err(BridgeError::DuplicateDesignator);
+            }
             let binding = active
                 .designators
                 .get(designator)
@@ -185,25 +241,7 @@ impl InteractiveBomRuntime {
                 return Err(BridgeError::MixedSideSelection);
             }
         }
-        let expected = active
-            .designators
-            .iter()
-            .filter(|(_, binding)| binding.component_key == component_key && &binding.side == side)
-            .map(|(designator, _)| designator.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        let submitted = designators
-            .iter()
-            .map(String::as_str)
-            .collect::<std::collections::HashSet<_>>();
-        if submitted.len() != designators.len() {
-            return Err(BridgeError::DuplicateDesignator);
-        }
-        if submitted != expected {
-            return Err(BridgeError::InvalidMessage(
-                "selection must include every designator for this board side".into(),
-            ));
-        }
-        Ok(expected.len() as i64)
+        Ok(designators.len() as i64)
     }
 }
 
@@ -229,32 +267,35 @@ impl<'db> InteractiveBomCache<'db> {
         source_path: impl AsRef<Path>,
         display_name: impl AsRef<str>,
     ) -> Result<CachedBomSession, CacheError> {
+        self.cache_interactive_bom_with_companion(source_path, display_name, None)
+    }
+
+    pub fn cache_interactive_bom_with_companion(
+        &self,
+        source_path: impl AsRef<Path>,
+        display_name: impl AsRef<str>,
+        companion_path: Option<&Path>,
+    ) -> Result<CachedBomSession, CacheError> {
         let display_name = display_name.as_ref().trim();
         if display_name.is_empty() {
             return Err(CacheError::InvalidDisplayName);
         }
         let source_path = source_path.as_ref();
-        let bytes = fs::read(source_path)?;
-        let source_text = std::str::from_utf8(&bytes).map_err(|error| {
-            CacheError::Parse(InteractiveHtmlError::UnsupportedInteractiveBom(
-                error.to_string(),
-            ))
-        })?;
-        let original_name = source_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_owned();
-        let normalized = super::interactive_html::parse_interactive_html_text(
-            source_text,
-            original_name.clone(),
-        )?;
+        let (bytes, original_name) = read_interactive_source(source_path)?;
+        let (normalized, companion) =
+            parse_interactive_source(&bytes, &original_name, companion_path)?;
         let sha256 = hex::encode(Sha256::digest(&bytes));
         let cache_name = format!("{sha256}.html");
         let token = Uuid::new_v4().to_string();
         let cache_path = validate_cache_path(&self.cache_dir, &cache_name)?;
         let designators = bindings(&normalized)?;
-        self.write_cache_atomically(&cache_path, &bytes, &token, &designators)?;
+        self.write_cache_atomically(
+            &cache_path,
+            &bytes,
+            &token,
+            &designators,
+            companion.as_ref(),
+        )?;
         let (bom_file_id, session_id) = {
             let tx = self.db.transaction()?;
             let bom_file_id = tx
@@ -402,7 +443,13 @@ impl<'db> InteractiveBomCache<'db> {
             return Ok(None);
         };
         let cache_path = validate_cache_path(&self.cache_dir, &cache_name)?;
-        let cached = fs::read(&cache_path)?;
+        let cached = fs::read(&cache_path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                CacheError::MissingCache(original_name.clone())
+            } else {
+                CacheError::Io(error)
+            }
+        })?;
         let marker = b"\n<!-- partnest bridge-v1 -->";
         let marker_index = cached
             .windows(marker.len())
@@ -417,13 +464,21 @@ impl<'db> InteractiveBomCache<'db> {
         }
         let source_text = std::str::from_utf8(source)
             .map_err(|error| CacheError::TamperedCache(error.to_string()))?;
-        let normalized = super::interactive_html::parse_interactive_html_text(
+        let companion = read_cached_companion(&cached[marker_index..])?;
+        let normalized = parse_interactive_html_text_with_companion(
             source_text,
             original_name.clone(),
+            companion.as_ref(),
         )?;
         let token = Uuid::new_v4().to_string();
         let designators = bindings(&normalized)?;
-        self.write_cache_atomically(&cache_path, source, &token, &designators)?;
+        self.write_cache_atomically(
+            &cache_path,
+            source,
+            &token,
+            &designators,
+            companion.as_ref(),
+        )?;
         self.db.connection().execute(
             "UPDATE welding_sessions SET updated_at = ?1 WHERE id = ?2 AND status = 'active'",
             rusqlite::params![crate::db::utc_now(), session_id],
@@ -456,10 +511,11 @@ impl<'db> InteractiveBomCache<'db> {
         source: &[u8],
         token: &str,
         designators: &BTreeMap<String, DesignatorBinding>,
+        companion: Option<&NormalizedBomDto>,
     ) -> Result<(), CacheError> {
         fs::create_dir_all(&self.cache_dir)?;
-        let expected = build_cached_html(source, token, designators)?;
-        if target.is_file() && fs::read(target).ok().as_deref() == Some(expected.as_slice()) {
+        let expected = build_cached_html(source, token, designators, companion)?;
+        if same_contents(target, &expected) {
             return Ok(());
         }
         let temp = self.cache_dir.join(format!(
@@ -474,16 +530,76 @@ impl<'db> InteractiveBomCache<'db> {
             prepare_temp_with(&temp, &expected, |path, contents| fs::write(path, contents))?;
         match atomic_replace(&temp, target) {
             Ok(()) => {}
-            Err(_error)
-                if target.is_file()
-                    && fs::read(target).ok().as_deref() == Some(expected.as_slice()) =>
-            {
+            Err(_error) if same_contents(target, &expected) => {
                 // Another writer completed the same replacement.
             }
             Err(error) => return Err(CacheError::AtomicReplace(error.to_string())),
         }
         Ok(())
     }
+}
+
+/// Compare a cached file with the expected bytes without reading a multi-megabyte
+/// HTML copy when the size already differs.
+fn same_contents(path: &Path, expected: &[u8]) -> bool {
+    fs::metadata(path)
+        .ok()
+        .filter(|meta| meta.is_file() && meta.len() == expected.len() as u64)
+        .and_then(|_| fs::read(path).ok())
+        .is_some_and(|actual| actual == expected)
+}
+
+/// Parse an interactive BOM, and its optional companion CSV, without touching
+/// the cache directory or the welding session tables. The BOM analysis workspace
+/// uses this so that previewing a file cannot cancel an in-progress session.
+pub fn preview_interactive_bom(
+    source_path: &Path,
+    companion_path: Option<&Path>,
+) -> Result<NormalizedBomDto, CacheError> {
+    let (bytes, original_name) = read_interactive_source(source_path)?;
+    parse_interactive_source(&bytes, &original_name, companion_path)
+        .map(|(normalized, _)| normalized)
+}
+
+/// Read a source file, rejecting oversized exports before they reach memory:
+/// callers hold the database lock for the whole command.
+fn read_interactive_source(source_path: &Path) -> Result<(Vec<u8>, String), CacheError> {
+    let size = fs::metadata(source_path)?.len();
+    if size > MAX_INTERACTIVE_BOM_BYTES as u64 {
+        return Err(CacheError::Parse(InteractiveHtmlError::TooLarge(
+            size as usize,
+        )));
+    }
+    let bytes = fs::read(source_path)?;
+    let original_name = source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    Ok((bytes, original_name))
+}
+
+fn parse_interactive_source(
+    bytes: &[u8],
+    original_name: &str,
+    companion_path: Option<&Path>,
+) -> Result<(NormalizedBomDto, Option<NormalizedBomDto>), CacheError> {
+    let source_text = std::str::from_utf8(bytes).map_err(|error| {
+        CacheError::Parse(InteractiveHtmlError::UnsupportedInteractiveBom(
+            error.to_string(),
+        ))
+    })?;
+    let companion = companion_path
+        .map(|path| {
+            parse_tabular_bom(path, None).map_err(|error| CacheError::Companion(error.to_string()))
+        })
+        .transpose()?;
+    let normalized = parse_interactive_html_text_with_companion(
+        source_text,
+        original_name.to_owned(),
+        companion.as_ref(),
+    )?;
+    Ok((normalized, companion))
 }
 
 fn validate_cache_path(cache_dir: &Path, cache_name: &str) -> Result<PathBuf, CacheError> {
@@ -600,6 +716,7 @@ fn build_cached_html(
     source: &[u8],
     token: &str,
     designators: &BTreeMap<String, DesignatorBinding>,
+    companion: Option<&NormalizedBomDto>,
 ) -> Result<Vec<u8>, CacheError> {
     let names = designators.keys().map(String::as_str).collect::<Vec<_>>();
     let bootstrap = serde_json::to_string(&BridgeBootstrap {
@@ -617,13 +734,35 @@ fn build_cached_html(
     cached.extend_from_slice(b";</script><script data-partnest-bridge=\"bridge-v1\">\n");
     cached.extend_from_slice(BRIDGE_JS.as_bytes());
     cached.extend_from_slice(b"\n</script>\n");
+    if let Some(companion) = companion {
+        let companion = serde_json::to_string(companion)
+            .map_err(|error| CacheError::TamperedCache(error.to_string()))?
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e")
+            .replace('&', "\\u0026");
+        cached.extend_from_slice(COMPANION_START);
+        cached.extend_from_slice(companion.as_bytes());
+        cached.extend_from_slice(COMPANION_END);
+        cached.extend_from_slice(b"\n");
+    }
     Ok(cached)
 }
 
-pub fn random_token_is_uuid_v4(token: &str) -> bool {
-    Uuid::parse_str(token)
-        .map(|uuid| uuid.get_version_num() == 4)
-        .unwrap_or(false)
+fn read_cached_companion(cached_tail: &[u8]) -> Result<Option<NormalizedBomDto>, CacheError> {
+    let Some(start) = cached_tail
+        .windows(COMPANION_START.len())
+        .position(|window| window == COMPANION_START)
+    else {
+        return Ok(None);
+    };
+    let content_start = start + COMPANION_START.len();
+    let end = cached_tail[content_start..]
+        .windows(COMPANION_END.len())
+        .position(|window| window == COMPANION_END)
+        .ok_or_else(|| CacheError::TamperedCache("companion CSV marker is incomplete".into()))?;
+    serde_json::from_slice(&cached_tail[content_start..content_start + end])
+        .map(Some)
+        .map_err(|error| CacheError::TamperedCache(error.to_string()))
 }
 
 #[cfg(test)]

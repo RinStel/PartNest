@@ -55,6 +55,28 @@ impl fmt::Display for BridgeError {
     }
 }
 
+impl BridgeError {
+    /// Reader-facing text. The English `Display` form stays available for logs
+    /// and assertions, while commands surface Chinese text in the UI.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::InvalidToken => "BOM 会话令牌无效，请重新在 BOM 中选择器件".into(),
+            Self::InactiveSession => "BOM 会话已失效，请在「BOM 分析」页重新设为活动 BOM".into(),
+            Self::InvalidMessage(reason) => format!("BOM 选择消息无效：{reason}"),
+            Self::DuplicateDesignator => "选中的位号有重复".into(),
+            Self::UnknownDesignator => "BOM 返回了不属于当前 BOM 的位号".into(),
+            Self::CrossGroupSelection => "选中的位号属于不同器件，请只选一个器件".into(),
+            Self::MixedSideSelection => "选中的位号属于不同板面，请切换到单一板面后再选".into(),
+            Self::TooManyDesignators => "一次选中的位号过多，请缩小选择范围".into(),
+            Self::DesignatorTooLong => "位号长度超出限制".into(),
+            Self::MessageTooLarge => "BOM 选择消息过大".into(),
+            Self::EmptyToken => "BOM 会话令牌为空".into(),
+            Self::TokenTooLong => "BOM 会话令牌长度超出限制".into(),
+            Self::EmptyDesignator => "选中的位号为空".into(),
+        }
+    }
+}
+
 /// Selection validation errors are also bridge errors so command handlers can
 /// expose one narrow rejection contract.
 pub type SelectionError = BridgeError;
@@ -66,6 +88,14 @@ pub fn decode_selection_message(json: &str) -> Result<BomSelectionMessage, Bridg
     }
     let message: BomSelectionMessage = serde_json::from_str(json)
         .map_err(|error| BridgeError::InvalidMessage(error.to_string()))?;
+    validate_selection_message(&message)?;
+    Ok(message)
+}
+
+/// Enforce the bridge contract on an already decoded message. Commands that
+/// receive a typed payload call this so the shape, size, and uniqueness limits
+/// cannot be bypassed by a caller that skipped the JSON decode path.
+pub fn validate_selection_message(message: &BomSelectionMessage) -> Result<(), BridgeError> {
     if message.message_type != "partnest:bom-selection" {
         return Err(BridgeError::InvalidMessage(
             "unexpected message type".into(),
@@ -76,7 +106,7 @@ pub fn decode_selection_message(json: &str) -> Result<BomSelectionMessage, Bridg
     if unique.len() != message.designators.len() {
         return Err(BridgeError::InvalidMessage("duplicate designator".into()));
     }
-    Ok(message)
+    Ok(())
 }
 
 pub(crate) fn validate_token_and_designators(

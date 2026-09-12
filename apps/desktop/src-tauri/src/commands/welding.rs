@@ -28,7 +28,7 @@ pub fn confirm_take_authorized_service(
             &input.side,
             &input.designators,
         )
-        .map_err(|error| CommandError::Validation(error.to_string()))?;
+        .map_err(|error| CommandError::Validation(error.user_message()))?;
     input.bom_quantity = bom_quantity;
     confirm_take_service(db, input)
 }

@@ -26,6 +26,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::bom::inspect_tabular_bom,
+            commands::bom::preview_interactive_bom_command,
             commands::bom::cache_interactive_bom,
             commands::bom::resolve_bom_selection,
             commands::bom::restore_active_interactive_bom,
@@ -39,6 +40,7 @@ pub fn run() {
             commands::parts::update_part,
             commands::parts::adjust_stock,
             commands::parts::delete_part,
+            commands::parts::lookup_lcsc,
             commands::movements::list_movements,
             commands::settings::create_backup,
             commands::settings::restore_backup,

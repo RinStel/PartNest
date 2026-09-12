@@ -1,5 +1,5 @@
 use super::{lock_error, normalize_slot, validate_name, CommandError};
-use crate::db::{new_id, utc_now, Database};
+use crate::db::{utc_now, Database};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -14,7 +14,7 @@ pub struct BoxInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BoxView {
-    pub id: String,
+    pub id: i64,
     pub name: String,
     pub rows: i64,
     pub cols: i64,
@@ -30,7 +30,7 @@ fn validate_dimensions(rows: i64, cols: i64) -> Result<(), CommandError> {
     Ok(())
 }
 
-fn read_box(db: &Database, id: &str) -> Result<BoxView, CommandError> {
+fn read_box(db: &Database, id: i64) -> Result<BoxView, CommandError> {
     let Some((name, rows, cols)) = db
         .connection()
         .query_row(
@@ -50,11 +50,11 @@ fn read_box(db: &Database, id: &str) -> Result<BoxView, CommandError> {
     };
     let occupied_slots = db
         .connection()
-        .prepare("SELECT slot FROM parts WHERE box_id = ?1 ORDER BY slot")?
+        .prepare("SELECT slot FROM parts WHERE box_id = ?1 AND quantity > 0 AND slot IS NOT NULL ORDER BY slot")?
         .query_map([id], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(BoxView {
-        id: id.into(),
+        id,
         name,
         rows,
         cols,
@@ -66,32 +66,32 @@ pub fn list_boxes_service(db: &Database) -> Result<Vec<BoxView>, CommandError> {
     let ids = db
         .connection()
         .prepare("SELECT id FROM boxes ORDER BY name COLLATE NOCASE, id")?
-        .query_map([], |row| row.get::<_, String>(0))?
+        .query_map([], |row| row.get::<_, i64>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    ids.into_iter().map(|id| read_box(db, &id)).collect()
+    ids.into_iter().map(|id| read_box(db, id)).collect()
 }
 
 pub fn create_box_service(db: &Database, input: BoxInput) -> Result<BoxView, CommandError> {
     validate_dimensions(input.rows, input.cols)?;
     let name = validate_name(&input.name, "收纳盒")?;
-    let id = new_id();
     db.connection().execute(
-        "INSERT INTO boxes (id, name, rows, cols) VALUES (?1, ?2, ?3, ?4)",
-        params![id, name, input.rows, input.cols],
+        "INSERT INTO boxes (name, rows, cols) VALUES (?1, ?2, ?3)",
+        params![name, input.rows, input.cols],
     )?;
-    read_box(db, &id)
+    let id = db.connection().last_insert_rowid();
+    read_box(db, id)
 }
 
 pub fn resize_box_service(
     db: &Database,
-    id: &str,
+    id: i64,
     rows: i64,
     cols: i64,
 ) -> Result<BoxView, CommandError> {
     validate_dimensions(rows, cols)?;
     let occupied = db
         .connection()
-        .prepare("SELECT slot FROM parts WHERE box_id = ?1 ORDER BY slot")?
+        .prepare("SELECT slot FROM parts WHERE box_id = ?1 AND quantity > 0 AND slot IS NOT NULL ORDER BY slot")?
         .query_map([id], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for slot in occupied {
@@ -114,14 +114,14 @@ pub fn resize_box_service(
 /// Update a box's name and dimensions without ever discarding occupied slots.
 pub fn update_box_service(
     db: &Database,
-    id: &str,
+    id: i64,
     input: BoxInput,
 ) -> Result<BoxView, CommandError> {
     validate_dimensions(input.rows, input.cols)?;
     let name = validate_name(&input.name, "收纳盒")?;
     let occupied = db
         .connection()
-        .prepare("SELECT slot FROM parts WHERE box_id = ?1 ORDER BY slot")?
+        .prepare("SELECT slot FROM parts WHERE box_id = ?1 AND quantity > 0 AND slot IS NOT NULL ORDER BY slot")?
         .query_map([id], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for slot in occupied {
@@ -143,7 +143,7 @@ pub fn update_box_service(
 
 /// Deleting a box is safe only when it has no parts. The FK restriction also
 /// remains enabled as a second line of defence.
-pub fn delete_box_service(db: &Database, id: &str) -> Result<(), CommandError> {
+pub fn delete_box_service(db: &Database, id: i64) -> Result<(), CommandError> {
     let occupied: i64 = db.connection().query_row(
         "SELECT COUNT(*) FROM parts WHERE box_id = ?1",
         [id],
@@ -179,26 +179,26 @@ pub fn create_box(
 #[tauri::command(rename = "resize_box")]
 pub fn resize_box(
     state: State<'_, Mutex<Database>>,
-    id: String,
+    id: i64,
     rows: i64,
     cols: i64,
 ) -> Result<BoxView, CommandError> {
     let db = state.lock().map_err(lock_error)?;
-    resize_box_service(&db, &id, rows, cols)
+    resize_box_service(&db, id, rows, cols)
 }
 
 #[tauri::command(rename = "update_box")]
 pub fn update_box(
     state: State<'_, Mutex<Database>>,
-    id: String,
+    id: i64,
     input: BoxInput,
 ) -> Result<BoxView, CommandError> {
     let db = state.lock().map_err(lock_error)?;
-    update_box_service(&db, &id, input)
+    update_box_service(&db, id, input)
 }
 
 #[tauri::command(rename = "delete_box")]
-pub fn delete_box(state: State<'_, Mutex<Database>>, id: String) -> Result<(), CommandError> {
+pub fn delete_box(state: State<'_, Mutex<Database>>, id: i64) -> Result<(), CommandError> {
     let db = state.lock().map_err(lock_error)?;
-    delete_box_service(&db, &id)
+    delete_box_service(&db, id)
 }
