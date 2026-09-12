@@ -235,6 +235,63 @@ fn boxes_use_integer_ids_and_zero_stock_releases_its_location() {
 }
 
 #[test]
+fn editing_depleted_part_restocks_with_location_and_audit_atomically() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
+    let part = create_part_service(&db, part_input(box_record.id, "A0", 1)).unwrap();
+    let cleared = adjust_stock_service(&db, &part.id, -1, "consume").unwrap();
+    let mut input = part_input(box_record.id, "A1", 12);
+    input.box_id = None;
+    assert!(update_part_service(&db, &part.id, cleared.version, input.clone()).is_err());
+    input.box_id = Some(box_record.id);
+    input.quantity = -1;
+    assert!(update_part_service(&db, &part.id, cleared.version, input.clone()).is_err());
+    input.quantity = 12;
+    assert!(matches!(
+        update_part_service(&db, &part.id, part.version, input.clone()),
+        Err(CommandError::Conflict)
+    ));
+    let mut occupied = part_input(box_record.id, "A1", 1);
+    occupied.lcsc_code = "C999".into();
+    let other = create_part_service(&db, occupied).unwrap();
+    assert!(update_part_service(&db, &part.id, cleared.version, input.clone()).is_err());
+    assert_eq!(
+        list_parts_service(&db, None)
+            .unwrap()
+            .iter()
+            .find(|p| p.id == part.id)
+            .unwrap(),
+        &cleared
+    );
+    adjust_stock_service(&db, &other.id, -1, "consume").unwrap();
+
+    let updated = update_part_service(&db, &part.id, cleared.version, input).unwrap();
+    assert_eq!(updated.quantity, 12);
+    assert_eq!(updated.box_id, Some(box_record.id));
+    assert_eq!(updated.slot.as_deref(), Some("A1"));
+    assert_eq!(updated.version, cleared.version + 1);
+    assert_eq!(
+        list_boxes_service(&db).unwrap()[0].occupied_slots,
+        vec!["A1"]
+    );
+    let movements: i64 = db
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM inventory_movements WHERE part_id = ?1",
+            [&part.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(movements, 3);
+    let movement = db.connection().query_row(
+        "SELECT movement_type, quantity, before_quantity, after_quantity FROM inventory_movements WHERE part_id = ?1 ORDER BY movement_sequence DESC LIMIT 1",
+        [&part.id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
+    ).unwrap();
+    assert_eq!(movement, ("in".into(), 12, 0, 12));
+}
+
+#[test]
 fn updating_part_moves_between_boxes_and_rejects_an_occupied_destination() {
     let db = database();
     let first_box = create_box_service(&db, box_input(2, 2)).unwrap();

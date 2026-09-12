@@ -66,6 +66,22 @@ describe("InventoryPage", () => {
     await waitFor(() => expect(createPart).toHaveBeenCalledWith(expect.objectContaining({ quantity: 0, box_id: null, slot: null })));
   });
 
+  it("restocks a depleted part and assigns a free slot in the same save", async () => {
+    const depleted = { ...part, quantity: 0, box_id: null, slot: null };
+    const updatePart = vi.fn().mockResolvedValue({ ...part, quantity: 12, slot: "A1", version: 2 });
+    const api = { listParts: vi.fn().mockResolvedValue([depleted]), listBoxes: vi.fn().mockResolvedValue([box]), createPart: vi.fn(), updatePart, adjustStock: vi.fn() };
+    render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    expect(screen.getByLabelText("数量")).not.toHaveAttribute("readonly");
+    fireEvent.change(screen.getByLabelText("收纳盒"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "选择盒位" }));
+    fireEvent.click(screen.getByRole("button", { name: "A1 空闲" }));
+    fireEvent.change(screen.getByLabelText("数量"), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存器件" }));
+    await waitFor(() => expect(updatePart).toHaveBeenCalledWith("part-1", 1, expect.objectContaining({ quantity: 12, box_id: 1, slot: "A1" })));
+    expect(await screen.findByRole("cell", { name: "12" })).toBeVisible();
+  });
+
   it("moves an existing part to another box and slot", async () => {
     const secondBox = { ...box, id: 2, name: "BOX2", occupied_slots: [] };
     const updatePart = vi.fn().mockResolvedValue({ ...part, box_id: 2, slot: "B1", version: 2 });

@@ -483,16 +483,30 @@ pub fn update_part_service(
         })
         .optional()?
         .ok_or_else(|| CommandError::NotFound("器件不存在".into()))?;
+    let new_quantity = if quantity == 0 {
+        input.quantity
+    } else {
+        quantity
+    };
     let name = validate_name(&input.name, "器件")?;
-    let (box_id, slot) = validate_input(db, &input, quantity)?;
+    let (box_id, slot) = validate_input(db, &input, new_quantity)?;
     let lcsc_code = normalize_input_lcsc_code(&input.lcsc_code)?;
-    let changed = db.connection().execute(
-        "UPDATE parts SET name = ?1, category = ?2, package = ?3, manufacturer = ?4, mpn = ?5, lcsc_code = ?6, box_id = ?7, slot = ?8, note = ?9, version = version + 1, updated_at = ?10 WHERE id = ?11 AND version = ?12",
-        params![name, optional_text(&input.category), optional_text(&input.package), optional_text(&input.manufacturer), optional_text(&input.mpn), lcsc_code, box_id, slot, optional_text(&input.note), utc_now(), id, expected_version],
+    let transaction = db.transaction()?;
+    let changed = transaction.execute(
+        "UPDATE parts SET name = ?1, category = ?2, package = ?3, manufacturer = ?4, mpn = ?5, lcsc_code = ?6, box_id = ?7, slot = ?8, note = ?9, quantity = ?13, version = version + 1, updated_at = ?10 WHERE id = ?11 AND version = ?12",
+        params![name, optional_text(&input.category), optional_text(&input.package), optional_text(&input.manufacturer), optional_text(&input.mpn), lcsc_code, box_id, slot, optional_text(&input.note), utc_now(), id, expected_version, new_quantity],
     )?;
     if changed != 1 {
         return Err(CommandError::Conflict);
     }
+    if new_quantity > quantity {
+        let sequence = next_movement_sequence(&transaction)?;
+        transaction.execute(
+            "INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason, before_quantity, after_quantity, movement_sequence) VALUES (?1, ?2, 'in', ?3, ?4, ?5, ?6, ?7)",
+            params![new_id(), id, new_quantity - quantity, "restock", quantity, new_quantity, sequence],
+        )?;
+    }
+    transaction.commit()?;
     read_part(db, id)
 }
 
