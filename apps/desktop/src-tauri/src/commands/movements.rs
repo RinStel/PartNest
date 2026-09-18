@@ -19,7 +19,7 @@ pub struct MovementView {
     pub before_quantity: Option<i64>,
     pub after_quantity: Option<i64>,
     pub reason: String,
-    pub bom_display_name: Option<String>,
+    pub project_name: Option<String>,
     pub session_id: Option<String>,
     pub created_at: String,
     pub reverses_movement_id: Option<String>,
@@ -35,15 +35,16 @@ struct RawMovement {
     before_quantity: Option<i64>,
     after_quantity: Option<i64>,
     reason: String,
-    bom_display_name: Option<String>,
+    project_name: Option<String>,
     session_id: Option<String>,
     component_key: Option<String>,
     side: Option<String>,
-    session_active: bool,
+    session_exists: bool,
     has_progress: bool,
     created_at: String,
     reverses_movement_id: Option<String>,
     has_reversal: bool,
+    part_active: bool,
 }
 
 pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, CommandError> {
@@ -58,9 +59,9 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
     let mut statement = db.connection().prepare(
         "SELECT m.id, m.part_id, p.name, m.movement_type, m.quantity, m.reason,
                 m.before_quantity, m.after_quantity,
-                bf.display_name, m.session_id, m.component_key, m.side,
-                EXISTS(SELECT 1 FROM welding_sessions active_session
-                       WHERE active_session.id = m.session_id AND active_session.status = 'active'),
+                pj.name, m.session_id, m.component_key, m.side,
+                EXISTS(SELECT 1 FROM welding_sessions session
+                       WHERE session.id = m.session_id),
                 EXISTS(SELECT 1 FROM welding_progress progress
                        WHERE progress.session_id = m.session_id
                          AND progress.component_key = m.component_key
@@ -68,11 +69,12 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
                 m.created_at,
                 m.reverses_movement_id,
                 EXISTS(SELECT 1 FROM inventory_movements reversal
-                       WHERE reversal.reverses_movement_id = m.id)
+                       WHERE reversal.reverses_movement_id = m.id),
+                p.id IS NOT NULL AND p.deleted_at IS NULL
            FROM inventory_movements m
            LEFT JOIN parts p ON p.id = m.part_id
            LEFT JOIN welding_sessions ws ON ws.id = m.session_id
-           LEFT JOIN bom_files bf ON bf.id = ws.bom_file_id
+           LEFT JOIN projects pj ON pj.id = ws.project_id
            ORDER BY m.created_at DESC, COALESCE(m.movement_sequence, 0) DESC, m.id DESC",
     )?;
     let rows = statement.query_map([], |row| {
@@ -85,15 +87,16 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
             reason: row.get(5)?,
             before_quantity: row.get(6)?,
             after_quantity: row.get(7)?,
-            bom_display_name: row.get(8)?,
+            project_name: row.get(8)?,
             session_id: row.get(9)?,
             component_key: row.get(10)?,
             side: row.get(11)?,
-            session_active: row.get(12)?,
+            session_exists: row.get(12)?,
             has_progress: row.get(13)?,
             created_at: row.get(14)?,
             reverses_movement_id: row.get(15)?,
             has_reversal: row.get(16)?,
+            part_active: row.get(17)?,
         })
     })?;
 
@@ -127,9 +130,10 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
             && movement.quantity < 0
             && movement.reverses_movement_id.is_none()
             && !movement.has_reversal
+            && movement.part_active
             && movement.part_id.is_some()
             && movement.part_name.is_some()
-            && movement.session_active
+            && movement.session_exists
             && movement
                 .component_key
                 .as_deref()
@@ -154,7 +158,7 @@ pub fn list_movements_service(db: &Database) -> Result<Vec<MovementView>, Comman
             before_quantity,
             after_quantity,
             reason: movement.reason,
-            bom_display_name: movement.bom_display_name,
+            project_name: movement.project_name,
             session_id: movement.session_id,
             side: movement.side,
             created_at: movement.created_at,

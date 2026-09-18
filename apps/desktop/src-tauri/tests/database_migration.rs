@@ -771,3 +771,107 @@ fn migration_backfills_confirmed_designators_from_surviving_take_movements() {
     assert_eq!(confirmed("C1"), ["R1".to_owned(), "R2".to_owned()]);
     assert_eq!(confirmed("C9"), Vec::<String>::new());
 }
+
+#[test]
+fn projects_migration_renames_the_bom_rows_without_losing_sessions_or_audit() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("upgrade.db");
+    let migrations = partnest_desktop_lib::db::migrations();
+    let db = Database::open_with_migrations(&path, &migrations[..10]).unwrap();
+    db.connection().execute_batch(
+        "INSERT INTO boxes (id, name, rows, cols) VALUES (1, 'Bench', 2, 2);
+         INSERT INTO parts (id, name, quantity, box_id, slot) VALUES ('p', 'Resistor', 8, 1, 'A0');
+         INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name, kind, normalized_json)
+             VALUES ('bom-1', 'board.html', '主板', 'hash', 'hash.html', 'interactive', NULL);
+         INSERT INTO welding_sessions (id, bom_file_id, status) VALUES ('s', 'bom-1', 'active');
+         INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason)
+             VALUES ('take', 'p', 's', 'consume', -2, '焊接取用');",
+    )
+    .unwrap();
+    drop(db);
+
+    let db = Database::open(&path).unwrap();
+    let project: (String, String, String, String) = db
+        .connection()
+        .query_row(
+            "SELECT p.id, p.name, p.original_name, s.status FROM projects p JOIN welding_sessions s ON s.project_id = p.id WHERE s.id = 's'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        project,
+        (
+            "bom-1".into(),
+            "主板".into(),
+            "board.html".into(),
+            "active".into()
+        ),
+        "the imported BOM becomes the project its session already pointed at"
+    );
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT session_id FROM inventory_movements WHERE id = 'take'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "s"
+    );
+
+    // The renamed table keeps the foreign key that protects the audit trail.
+    assert!(db
+        .connection()
+        .execute("DELETE FROM projects WHERE id = 'bom-1'", [])
+        .is_err());
+    assert!(db
+        .connection()
+        .execute("INSERT INTO welding_sessions (id, project_id, status) VALUES ('s2', 'nope', 'completed')", [])
+        .is_err());
+}
+
+#[test]
+fn soft_delete_migration_preserves_v8_inventory_and_frees_only_archived_codes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("upgrade.db");
+    let migrations = partnest_desktop_lib::db::migrations();
+    let db = Database::open_with_migrations(&path, &migrations[..8]).unwrap();
+    db.connection().execute_batch("INSERT INTO boxes (id, name, rows, cols) VALUES (1, 'Bench', 2, 2);
+        INSERT INTO parts (id, name, lcsc_code, quantity, box_id, slot) VALUES ('old', 'Resistor', 'C123', 7, 1, 'A0');
+        INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason) VALUES ('history', 'old', 'in', 7, 'initial');").unwrap();
+    drop(db);
+    let db = Database::open(&path).unwrap();
+    let original: (String, i64, Option<String>) = db
+        .connection()
+        .query_row(
+            "SELECT name, quantity, deleted_at FROM parts WHERE id = 'old'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(original, ("Resistor".into(), 7, None));
+    assert!(db.connection().execute("INSERT INTO parts (id, name, lcsc_code, quantity) VALUES ('duplicate', 'Duplicate', 'c123', 0)", []).is_err());
+    partnest_desktop_lib::commands::parts::delete_part_service(&db, "old").unwrap();
+    db.connection().execute("INSERT INTO parts (id, name, lcsc_code, quantity, box_id, slot) VALUES ('replacement', 'New', 'C123', 3, 1, 'A0')", []).unwrap();
+    assert!(db.connection().execute("INSERT INTO parts (id, name, lcsc_code, quantity) VALUES ('duplicate', 'Duplicate', 'c123', 0)", []).is_err());
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT part_id FROM inventory_movements WHERE id = 'history'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "old"
+    );
+    let parts = partnest_desktop_lib::commands::parts::list_parts_service(&db, None).unwrap();
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].id, "replacement");
+    drop(db);
+    let reopened = Database::open(&path).unwrap();
+    assert_eq!(
+        partnest_desktop_lib::commands::parts::list_parts_service(&reopened, None).unwrap(),
+        parts
+    );
+}

@@ -5,8 +5,12 @@ use super::{
     interactive_html::{
         parse_interactive_html_text_with_companion, InteractiveHtmlError, MAX_INTERACTIVE_BOM_BYTES,
     },
-    tabular::parse_tabular_bom,
-    types::{BomSide, NormalizedBomDto},
+    projects::{
+        apply_supplement, ensure_supplementable, project_record, record_project, ProjectError,
+        ProjectKind, ProjectRecord,
+    },
+    tabular::{inspect_tabular_bom, parse_tabular_bom, TabularError},
+    types::{BomSide, FieldMapping, ImportPreview, NormalizedBomDto},
 };
 use crate::db::{new_id, Database};
 use rusqlite::OptionalExtension;
@@ -23,6 +27,7 @@ use uuid::Uuid;
 pub use super::bridge::SelectionError;
 
 const BRIDGE_JS: &str = include_str!("../../resources/bridge-v1.js");
+const BRIDGE_MARKER: &[u8] = b"\n<!-- partnest bridge-v1 -->";
 const COMPANION_START: &[u8] =
     b"<script data-partnest-companion=\"bom-v1\" type=\"application/json\">";
 const COMPANION_END: &[u8] = b"</script>";
@@ -30,13 +35,27 @@ const COMPANION_END: &[u8] = b"</script>";
 #[derive(Debug, Clone, Serialize)]
 pub struct CachedBomSession {
     pub session_id: String,
-    pub bom_file_id: String,
+    pub project_id: String,
+    pub project_name: String,
     pub original_name: String,
-    pub display_name: String,
     pub sha256: String,
     pub cache_name: String,
-    pub cache_path: PathBuf,
+    /// `None` for tabular projects: they have no interactive canvas to load.
+    pub cache_path: Option<PathBuf>,
+    pub kind: ProjectKind,
     pub token: String,
+    pub normalized: NormalizedBomDto,
+}
+
+/// What an import stored: the project row plus the analysis it came from.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportedProject {
+    pub project_id: String,
+    pub name: String,
+    pub original_name: String,
+    pub cache_name: String,
+    pub kind: ProjectKind,
+    pub has_table: bool,
     pub normalized: NormalizedBomDto,
 }
 
@@ -44,7 +63,9 @@ pub struct CachedBomSession {
 pub struct ResolvedSelection {
     pub session_id: String,
     pub component_key: String,
-    pub side: BomSide,
+    /// `None` when the BOM records no board side for the selection; the
+    /// operator's current side tab then decides where the take is recorded.
+    pub side: Option<BomSide>,
     pub designators: Vec<String>,
 }
 
@@ -53,7 +74,9 @@ pub enum CacheError {
     Io(std::io::Error),
     Database(rusqlite::Error),
     Parse(InteractiveHtmlError),
-    InvalidDisplayName,
+    Tabular(TabularError),
+    Project(ProjectError),
+    NeedsMapping,
     TamperedCache(String),
     AtomicReplace(String),
     Companion(String),
@@ -65,7 +88,11 @@ impl fmt::Display for CacheError {
             Self::Io(error) => write!(f, "cache I/O error: {error}"),
             Self::Database(error) => write!(f, "cache database error: {error}"),
             Self::Parse(error) => error.fmt(f),
-            Self::InvalidDisplayName => f.write_str("display name cannot be empty"),
+            Self::Tabular(error) => write!(f, "tabular BOM error: {error}"),
+            Self::Project(error) => error.fmt(f),
+            Self::NeedsMapping => {
+                f.write_str("tabular BOM needs a field mapping before it can be imported")
+            }
             Self::TamperedCache(reason) => write!(f, "cached BOM is invalid: {reason}"),
             Self::AtomicReplace(reason) => write!(f, "cached BOM atomic replace failed: {reason}"),
             Self::Companion(reason) => write!(f, "companion CSV error: {reason}"),
@@ -82,15 +109,17 @@ impl CacheError {
     pub fn user_message(&self) -> String {
         match self {
             Self::Parse(error) => error.user_message(),
+            Self::Project(error) => error.user_message(),
             Self::MissingCache(_) => {
-                "活动 BOM 的缓存文件已丢失，请在「BOM 分析」页重新选择该 BOM 文件".into()
+                "该项目的画布缓存已丢失，请在「项目」页重新导入原始 BOM 文件".into()
             }
-            Self::TamperedCache(_) => "缓存的 BOM 已损坏，请在「BOM 分析」页重新导入该 BOM".into(),
-            Self::InvalidDisplayName => "BOM 备注名不能为空".into(),
+            Self::TamperedCache(_) => "该项目的 BOM 缓存已损坏，请在「项目」页重新导入".into(),
+            Self::NeedsMapping => "表格 BOM 需要先完成字段映射，再导入为项目".into(),
             Self::Companion(reason) => format!("配套 CSV 解析失败：{reason}"),
             Self::AtomicReplace(reason) => format!("写入 BOM 缓存失败：{reason}"),
             Self::Io(error) => format!("BOM 缓存读写失败：{error}"),
-            Self::Database(error) => format!("BOM 会话保存失败：{error}"),
+            Self::Database(error) => format!("焊接会话保存失败：{error}"),
+            Self::Tabular(error) => format!("表格 BOM 解析失败：{error}"),
         }
     }
 }
@@ -109,6 +138,16 @@ impl From<InteractiveHtmlError> for CacheError {
         Self::Parse(error)
     }
 }
+impl From<TabularError> for CacheError {
+    fn from(error: TabularError) -> Self {
+        Self::Tabular(error)
+    }
+}
+impl From<ProjectError> for CacheError {
+    fn from(error: ProjectError) -> Self {
+        Self::Project(error)
+    }
+}
 
 struct ActiveSession {
     session_id: String,
@@ -119,7 +158,22 @@ struct ActiveSession {
 #[derive(Clone)]
 struct DesignatorBinding {
     component_key: String,
-    side: BomSide,
+    /// `None` for BOMs that do not record a board side for this placement.
+    side: Option<BomSide>,
+}
+
+/// A cached interactive copy reopened for a new session.
+struct ReopenedCanvas {
+    cache_path: PathBuf,
+    token: String,
+    normalized: NormalizedBomDto,
+}
+
+/// A verified cached canvas, free of the bridge payload.
+struct CachedCanvas {
+    cache_path: PathBuf,
+    source: Vec<u8>,
+    companion: Option<NormalizedBomDto>,
 }
 
 pub struct InteractiveBomCache<'db> {
@@ -144,25 +198,38 @@ impl InteractiveBomRuntime {
         }
     }
 
-    pub fn cache_interactive_bom(
-        &self,
-        db: &Database,
-        source_path: impl AsRef<Path>,
-        display_name: impl AsRef<str>,
-    ) -> Result<CachedBomSession, CacheError> {
-        InteractiveBomCache::with_active(db, &self.cache_dir, self.active.clone())
-            .cache_interactive_bom(source_path, display_name)
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
     }
 
-    pub fn cache_interactive_bom_with_companion(
+    /// Import a BOM file as a project. Importing never switches the welding
+    /// session: the operator opens the workspace from the project when ready.
+    pub fn import_project(
         &self,
         db: &Database,
-        source_path: impl AsRef<Path>,
-        display_name: impl AsRef<str>,
+        source_path: &Path,
+        name: Option<&str>,
+        mapping: Option<&FieldMapping>,
         companion_path: Option<&Path>,
-    ) -> Result<CachedBomSession, CacheError> {
+    ) -> Result<ImportedProject, CacheError> {
+        InteractiveBomCache::with_active(db, &self.cache_dir, self.active.clone()).import_project(
+            source_path,
+            name,
+            mapping,
+            companion_path,
+        )
+    }
+
+    /// Add the source an existing project is still missing.
+    pub fn supplement_project(
+        &self,
+        db: &Database,
+        project_id: &str,
+        source_path: &Path,
+        mapping: Option<&FieldMapping>,
+    ) -> Result<ImportedProject, CacheError> {
         InteractiveBomCache::with_active(db, &self.cache_dir, self.active.clone())
-            .cache_interactive_bom_with_companion(source_path, display_name, companion_path)
+            .supplement_project(project_id, source_path, mapping)
     }
 
     pub fn resolve_bom_selection(
@@ -181,6 +248,16 @@ impl InteractiveBomRuntime {
     ) -> Result<Option<CachedBomSession>, CacheError> {
         InteractiveBomCache::with_active(db, &self.cache_dir, self.active.clone())
             .restore_active_session()
+    }
+
+    /// Open the welding workspace for a project, making it the one active session.
+    pub fn open_project_welding(
+        &self,
+        db: &Database,
+        project_id: &str,
+    ) -> Result<CachedBomSession, CacheError> {
+        InteractiveBomCache::with_active(db, &self.cache_dir, self.active.clone())
+            .open_project_welding(project_id)
     }
 
     /// Drop the in-memory bridge token and designator bindings after the
@@ -237,8 +314,10 @@ impl InteractiveBomRuntime {
             if binding.component_key != component_key {
                 return Err(BridgeError::CrossGroupSelection);
             }
-            if &binding.side != side {
-                return Err(BridgeError::MixedSideSelection);
+            if let Some(recorded) = &binding.side {
+                if recorded != side {
+                    return Err(BridgeError::MixedSideSelection);
+                }
             }
         }
         Ok(designators.len() as i64)
@@ -262,99 +341,174 @@ impl<'db> InteractiveBomCache<'db> {
         }
     }
 
-    pub fn cache_interactive_bom(
+    /// Import a BOM file as a project. An interactive BOM also gets its bridged
+    /// canvas copy written here, so opening the workspace later on never needs
+    /// the original file again.
+    pub fn import_project(
         &self,
-        source_path: impl AsRef<Path>,
-        display_name: impl AsRef<str>,
-    ) -> Result<CachedBomSession, CacheError> {
-        self.cache_interactive_bom_with_companion(source_path, display_name, None)
+        source_path: &Path,
+        name: Option<&str>,
+        mapping: Option<&FieldMapping>,
+        companion_path: Option<&Path>,
+    ) -> Result<ImportedProject, CacheError> {
+        let kind = ProjectKind::from_source_path(source_path)?;
+        let (bytes, original_name) = read_source(source_path, kind)?;
+        let (normalized, companion) = match kind {
+            ProjectKind::Interactive => {
+                parse_interactive_source(&bytes, &original_name, companion_path)?
+            }
+            ProjectKind::Tabular => match inspect_tabular_bom(source_path, mapping)? {
+                ImportPreview::Ready(normalized) => (normalized, None),
+                // The import dialog resolves mapping before calling, so this is
+                // a guard against a stale mapping rather than a user flow.
+                ImportPreview::NeedsMapping { .. } => return Err(CacheError::NeedsMapping),
+            },
+        };
+        let record = record_project(
+            self.db,
+            source_path,
+            &bytes,
+            name,
+            kind,
+            companion.is_some(),
+            &normalized,
+        )?;
+        if kind == ProjectKind::Interactive {
+            // The token baked into a freshly imported canvas is never published;
+            // opening the project mints the one the bridge has to present.
+            let cache_path = validate_cache_path(&self.cache_dir, &record.cache_name)?;
+            self.write_cache_atomically(
+                &cache_path,
+                &bytes,
+                &Uuid::new_v4().to_string(),
+                &bindings(&normalized)?,
+                companion.as_ref(),
+            )?;
+        }
+        Ok(ImportedProject {
+            project_id: record.id,
+            name: record.name,
+            original_name: record.original_name,
+            cache_name: record.cache_name,
+            kind: record.kind,
+            has_table: record.has_table,
+            normalized,
+        })
     }
 
-    pub fn cache_interactive_bom_with_companion(
+    /// Add the source a project is still missing: a parts table merged into its
+    /// cached canvas, or a canvas built on top of its stored table analysis.
+    pub fn supplement_project(
         &self,
-        source_path: impl AsRef<Path>,
-        display_name: impl AsRef<str>,
-        companion_path: Option<&Path>,
-    ) -> Result<CachedBomSession, CacheError> {
-        let display_name = display_name.as_ref().trim();
-        if display_name.is_empty() {
-            return Err(CacheError::InvalidDisplayName);
+        project_id: &str,
+        source_path: &Path,
+        mapping: Option<&FieldMapping>,
+    ) -> Result<ImportedProject, CacheError> {
+        let record = ensure_supplementable(self.db, project_id)?;
+        let supplied = ProjectKind::from_source_path(source_path)?;
+        if record.missing_source() != Some(supplied) {
+            return Err(CacheError::Project(ProjectError::SuppliesWrongSource(
+                match record.missing_source() {
+                    Some(ProjectKind::Tabular) => "需要器件表格（CSV / XLS / XLSX）".into(),
+                    Some(ProjectKind::Interactive) => "需要可交互式 BOM（HTML）".into(),
+                    None => String::new(),
+                },
+            )));
         }
-        let source_path = source_path.as_ref();
-        let (bytes, original_name) = read_interactive_source(source_path)?;
-        let (normalized, companion) =
-            parse_interactive_source(&bytes, &original_name, companion_path)?;
+        let (record, normalized) = match supplied {
+            ProjectKind::Tabular => self.attach_table(&record, source_path, mapping)?,
+            ProjectKind::Interactive => self.attach_canvas(&record, source_path)?,
+        };
+        Ok(ImportedProject {
+            project_id: record.id.clone(),
+            name: record.name.clone(),
+            original_name: record.original_name.clone(),
+            cache_name: record.cache_name.clone(),
+            kind: record.kind,
+            has_table: record.has_table,
+            normalized,
+        })
+    }
+
+    /// Merge a parts table into the project's cached canvas and store the result.
+    fn attach_table(
+        &self,
+        record: &ProjectRecord,
+        table_path: &Path,
+        mapping: Option<&FieldMapping>,
+    ) -> Result<(ProjectRecord, NormalizedBomDto), CacheError> {
+        let companion = match inspect_tabular_bom(table_path, mapping)? {
+            ImportPreview::Ready(normalized) => normalized,
+            ImportPreview::NeedsMapping { .. } => return Err(CacheError::NeedsMapping),
+        };
+        let canvas = self.cached_canvas(record)?;
+        let source_text = std::str::from_utf8(&canvas.source)
+            .map_err(|error| CacheError::TamperedCache(error.to_string()))?;
+        let normalized = parse_interactive_html_text_with_companion(
+            source_text,
+            record.original_name.clone(),
+            Some(&companion),
+        )?;
+        // The table travels inside the cached copy, so a later restart rebuilds
+        // the same merge without the operator picking the file again.
+        self.write_cache_atomically(
+            &canvas.cache_path,
+            &canvas.source,
+            &Uuid::new_v4().to_string(),
+            &bindings(&normalized)?,
+            Some(&companion),
+        )?;
+        let record = apply_supplement(
+            self.db,
+            &record.id,
+            ProjectKind::Interactive,
+            &record.sha256,
+            &record.cache_name,
+            &normalized,
+        )?;
+        Ok((record, normalized))
+    }
+
+    /// Cache an interactive export as the project's canvas, keeping the analysis
+    /// it already stored as the parts table.
+    fn attach_canvas(
+        &self,
+        record: &ProjectRecord,
+        html_path: &Path,
+    ) -> Result<(ProjectRecord, NormalizedBomDto), CacheError> {
+        let (bytes, original_name) = read_source(html_path, ProjectKind::Interactive)?;
+        let companion = record.snapshot()?;
+        let source_text = std::str::from_utf8(&bytes).map_err(|error| {
+            CacheError::Parse(InteractiveHtmlError::UnsupportedInteractiveBom(
+                error.to_string(),
+            ))
+        })?;
+        let normalized = parse_interactive_html_text_with_companion(
+            source_text,
+            original_name,
+            Some(&companion),
+        )?;
         let sha256 = hex::encode(Sha256::digest(&bytes));
         let cache_name = format!("{sha256}.html");
-        let token = Uuid::new_v4().to_string();
+        // Record first: a canvas that belongs to another project must not be
+        // written over before that clash is reported.
+        let record = apply_supplement(
+            self.db,
+            &record.id,
+            ProjectKind::Interactive,
+            &sha256,
+            &cache_name,
+            &normalized,
+        )?;
         let cache_path = validate_cache_path(&self.cache_dir, &cache_name)?;
-        let designators = bindings(&normalized)?;
         self.write_cache_atomically(
             &cache_path,
             &bytes,
-            &token,
-            &designators,
-            companion.as_ref(),
+            &Uuid::new_v4().to_string(),
+            &bindings(&normalized)?,
+            Some(&companion),
         )?;
-        let (bom_file_id, session_id) = {
-            let tx = self.db.transaction()?;
-            let bom_file_id = tx
-                .query_row(
-                    "SELECT id FROM bom_files WHERE sha256 = ?1",
-                    [&sha256],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .unwrap_or_else(new_id);
-            tx.execute(
-                "INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(sha256) DO UPDATE SET original_name = excluded.original_name, display_name = excluded.display_name, cache_name = excluded.cache_name",
-                rusqlite::params![bom_file_id, original_name, display_name, sha256, cache_name],
-            )?;
-            let session_id = tx.query_row(
-                "SELECT id FROM welding_sessions WHERE bom_file_id = ?1 AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
-                [&bom_file_id],
-                |row| row.get::<_, String>(0),
-            ).optional()?.unwrap_or_else(new_id);
-            tx.execute(
-                "UPDATE welding_sessions SET status = 'cancelled', updated_at = ?1 WHERE status = 'active' AND id <> ?2",
-                rusqlite::params![crate::db::utc_now(), session_id],
-            )?;
-            let exists = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM welding_sessions WHERE id = ?1)",
-                [&session_id],
-                |row| row.get::<_, bool>(0),
-            )?;
-            if !exists {
-                tx.execute("INSERT INTO welding_sessions (id, bom_file_id, status) VALUES (?1, ?2, 'active')", rusqlite::params![session_id, bom_file_id])?;
-            } else {
-                tx.execute(
-                    "UPDATE welding_sessions SET status = 'active', updated_at = ?1 WHERE id = ?2",
-                    rusqlite::params![crate::db::utc_now(), session_id],
-                )?;
-            }
-            tx.commit()?;
-            (bom_file_id, session_id)
-        };
-        *self
-            .active
-            .lock()
-            .map_err(|_| CacheError::Io(std::io::Error::other("session lock poisoned")))? =
-            Some(ActiveSession {
-                session_id: session_id.clone(),
-                token: token.clone(),
-                designators,
-            });
-        Ok(CachedBomSession {
-            session_id,
-            bom_file_id,
-            original_name,
-            display_name: display_name.to_owned(),
-            sha256,
-            cache_name,
-            cache_path,
-            token,
-            normalized,
-        })
+        Ok((record, normalized))
     }
 
     pub fn resolve_bom_selection(
@@ -402,83 +556,149 @@ impl<'db> InteractiveBomCache<'db> {
             } else {
                 group = Some(binding.component_key.clone());
             }
-            if let Some(expected) = &side {
-                if expected != &binding.side {
+            if let (Some(expected), Some(recorded)) = (&side, &binding.side) {
+                if expected != recorded {
                     return Err(BridgeError::MixedSideSelection);
                 }
-            } else {
-                side = Some(binding.side.clone());
+            } else if side.is_none() {
+                side = binding.side.clone();
             }
         }
         Ok(ResolvedSelection {
             session_id: active.session_id.clone(),
             component_key: group.expect("nonempty checked"),
-            side: side.expect("nonempty checked"),
+            side,
             designators: designators.to_owned(),
         })
     }
 
+    /// Re-open the session the database still considers active, so returning to
+    /// the workspace restores the same project and its recorded progress.
     pub fn restore_active_session(&self) -> Result<Option<CachedBomSession>, CacheError> {
-        let metadata = self
+        let active = self
             .db
             .connection()
             .query_row(
-                "SELECT s.id, f.id, f.original_name, f.display_name, f.sha256, f.cache_name FROM welding_sessions s JOIN bom_files f ON f.id = s.bom_file_id WHERE s.status = 'active' ORDER BY s.updated_at DESC LIMIT 1",
+                "SELECT id, project_id FROM welding_sessions WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1",
                 [],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                    ))
-                },
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?;
-        let Some((session_id, bom_file_id, original_name, display_name, sha256, cache_name)) =
-            metadata
-        else {
+        let Some((session_id, project_id)) = active else {
             return Ok(None);
         };
-        let cache_path = validate_cache_path(&self.cache_dir, &cache_name)?;
-        let cached = fs::read(&cache_path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                CacheError::MissingCache(original_name.clone())
-            } else {
-                CacheError::Io(error)
-            }
-        })?;
-        let marker = b"\n<!-- partnest bridge-v1 -->";
-        let marker_index = cached
-            .windows(marker.len())
-            .rposition(|window| window == marker)
-            .ok_or_else(|| CacheError::TamperedCache("bridge marker missing".into()))?;
-        let source = &cached[..marker_index];
-        let actual_sha = hex::encode(Sha256::digest(source));
-        if actual_sha != sha256 {
-            return Err(CacheError::TamperedCache(
-                "cached source hash mismatch".into(),
-            ));
-        }
-        let source_text = std::str::from_utf8(source)
+        let record = project_record(self.db, &project_id)?;
+        Ok(Some(self.publish_session(&session_id, &record)?))
+    }
+
+    /// Verify a cached interactive copy, re-issue its bridge token, and rebuild
+    /// the designator bindings the host trusts for that canvas.
+    fn reopen_canvas(&self, record: &ProjectRecord) -> Result<ReopenedCanvas, CacheError> {
+        let canvas = self.cached_canvas(record)?;
+        let source_text = std::str::from_utf8(&canvas.source)
             .map_err(|error| CacheError::TamperedCache(error.to_string()))?;
-        let companion = read_cached_companion(&cached[marker_index..])?;
         let normalized = parse_interactive_html_text_with_companion(
             source_text,
-            original_name.clone(),
-            companion.as_ref(),
+            record.original_name.clone(),
+            canvas.companion.as_ref(),
         )?;
         let token = Uuid::new_v4().to_string();
         let designators = bindings(&normalized)?;
         self.write_cache_atomically(
-            &cache_path,
-            source,
+            &canvas.cache_path,
+            &canvas.source,
             &token,
             &designators,
-            companion.as_ref(),
+            canvas.companion.as_ref(),
         )?;
+        Ok(ReopenedCanvas {
+            cache_path: canvas.cache_path,
+            token,
+            normalized,
+        })
+    }
+
+    /// The project's cached export, stripped of the bridge payload, together
+    /// with the companion table that was merged into it.
+    fn cached_canvas(&self, record: &ProjectRecord) -> Result<CachedCanvas, CacheError> {
+        let cache_path = validate_cache_path(&self.cache_dir, &record.cache_name)?;
+        let cached = fs::read(&cache_path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                CacheError::MissingCache(record.original_name.clone())
+            } else {
+                CacheError::Io(error)
+            }
+        })?;
+        let marker_index = cached
+            .windows(BRIDGE_MARKER.len())
+            .rposition(|window| window == BRIDGE_MARKER)
+            .ok_or_else(|| CacheError::TamperedCache("bridge marker missing".into()))?;
+        let source = cached[..marker_index].to_vec();
+        if hex::encode(Sha256::digest(&source)) != record.sha256 {
+            return Err(CacheError::TamperedCache(
+                "cached source hash mismatch".into(),
+            ));
+        }
+        let companion = read_cached_companion(&cached[marker_index..])?;
+        Ok(CachedCanvas {
+            cache_path,
+            source,
+            companion,
+        })
+    }
+
+    /// Open the welding workspace for a project. Its already-active session is
+    /// reused, so leaving and returning keeps the takes recorded so far.
+    pub fn open_project_welding(&self, project_id: &str) -> Result<CachedBomSession, CacheError> {
+        let record = project_record(self.db, project_id)?;
+        let session_id = {
+            let tx = self.db.transaction()?;
+            let session_id = activate_session(&tx, &record.id)?;
+            tx.commit()?;
+            session_id
+        };
+        self.publish_session(&session_id, &record)
+    }
+
+    /// Publish a session that is already active in the database against a stored
+    /// project: reopen whatever the project owns as its source of truth, mint the
+    /// bridge token, and bind the designators that token may select.
+    fn publish_session(
+        &self,
+        session_id: &str,
+        record: &ProjectRecord,
+    ) -> Result<CachedBomSession, CacheError> {
+        let (normalized, cache_path, token) = match record.kind {
+            ProjectKind::Interactive => {
+                let canvas = self.reopen_canvas(record)?;
+                // The canvas only accepts the token baked into its cached copy.
+                (canvas.normalized, Some(canvas.cache_path), canvas.token)
+            }
+            // Table projects have no canvas: the analysis snapshot drives the
+            // workspace and the operator picks designators from the tray.
+            ProjectKind::Tabular => (record.snapshot()?, None, Uuid::new_v4().to_string()),
+        };
+        self.record_active_session(session_id, &token, bindings(&normalized)?)?;
+        Ok(CachedBomSession {
+            session_id: session_id.to_owned(),
+            project_id: record.id.clone(),
+            project_name: record.name.clone(),
+            original_name: record.original_name.clone(),
+            sha256: record.sha256.clone(),
+            cache_name: record.cache_name.clone(),
+            cache_path,
+            kind: record.kind,
+            token,
+            normalized,
+        })
+    }
+
+    fn record_active_session(
+        &self,
+        session_id: &str,
+        token: &str,
+        designators: BTreeMap<String, DesignatorBinding>,
+    ) -> Result<(), CacheError> {
         self.db.connection().execute(
             "UPDATE welding_sessions SET updated_at = ?1 WHERE id = ?2 AND status = 'active'",
             rusqlite::params![crate::db::utc_now(), session_id],
@@ -488,21 +708,11 @@ impl<'db> InteractiveBomCache<'db> {
             .lock()
             .map_err(|_| CacheError::Io(std::io::Error::other("session lock poisoned")))? =
             Some(ActiveSession {
-                session_id: session_id.clone(),
-                token: token.clone(),
+                session_id: session_id.to_owned(),
+                token: token.to_owned(),
                 designators,
             });
-        Ok(Some(CachedBomSession {
-            session_id,
-            bom_file_id,
-            original_name,
-            display_name,
-            sha256,
-            cache_name,
-            cache_path,
-            token,
-            normalized,
-        }))
+        Ok(())
     }
 
     fn write_cache_atomically(
@@ -556,16 +766,16 @@ pub fn preview_interactive_bom(
     source_path: &Path,
     companion_path: Option<&Path>,
 ) -> Result<NormalizedBomDto, CacheError> {
-    let (bytes, original_name) = read_interactive_source(source_path)?;
+    let (bytes, original_name) = read_source(source_path, ProjectKind::Interactive)?;
     parse_interactive_source(&bytes, &original_name, companion_path)
         .map(|(normalized, _)| normalized)
 }
 
-/// Read a source file, rejecting oversized exports before they reach memory:
-/// callers hold the database lock for the whole command.
-fn read_interactive_source(source_path: &Path) -> Result<(Vec<u8>, String), CacheError> {
+/// Read a source file, rejecting oversized interactive exports before they
+/// reach memory: callers hold the database lock for the whole command.
+fn read_source(source_path: &Path, kind: ProjectKind) -> Result<(Vec<u8>, String), CacheError> {
     let size = fs::metadata(source_path)?.len();
-    if size > MAX_INTERACTIVE_BOM_BYTES as u64 {
+    if kind == ProjectKind::Interactive && size > MAX_INTERACTIVE_BOM_BYTES as u64 {
         return Err(CacheError::Parse(InteractiveHtmlError::TooLarge(
             size as usize,
         )));
@@ -600,6 +810,40 @@ fn parse_interactive_source(
         companion.as_ref(),
     )?;
     Ok((normalized, companion))
+}
+
+/// Point the single active welding session at `project_id`, cancelling any
+/// other active session so exactly one project drives the welding workspace.
+fn activate_session(tx: &rusqlite::Transaction<'_>, project_id: &str) -> rusqlite::Result<String> {
+    let session_id = tx
+        .query_row(
+            "SELECT id FROM welding_sessions WHERE project_id = ?1 AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+            [project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .unwrap_or_else(new_id);
+    tx.execute(
+        "UPDATE welding_sessions SET status = 'cancelled', updated_at = ?1 WHERE status = 'active' AND id <> ?2",
+        rusqlite::params![crate::db::utc_now(), session_id],
+    )?;
+    let exists = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM welding_sessions WHERE id = ?1)",
+        [&session_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if exists {
+        tx.execute(
+            "UPDATE welding_sessions SET status = 'active', updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![crate::db::utc_now(), session_id],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO welding_sessions (id, project_id, status) VALUES (?1, ?2, 'active')",
+            rusqlite::params![session_id, project_id],
+        )?;
+    }
+    Ok(session_id)
 }
 
 fn validate_cache_path(cache_dir: &Path, cache_name: &str) -> Result<PathBuf, CacheError> {
@@ -697,16 +941,23 @@ fn bindings(
     let mut result = BTreeMap::new();
     for group in &normalized.groups {
         for placement in &group.placements {
-            let Some(side) = placement.side.clone() else {
-                continue;
-            };
             result.insert(
                 placement.designator.clone(),
                 DesignatorBinding {
                     component_key: group.component_key.clone(),
-                    side,
+                    side: placement.side.clone(),
                 },
             );
+        }
+        // Tabular BOMs without a board-side column list designators on the
+        // group only; the operator declares the side when taking parts.
+        for designator in &group.designators {
+            result
+                .entry(designator.clone())
+                .or_insert_with(|| DesignatorBinding {
+                    component_key: group.component_key.clone(),
+                    side: None,
+                });
         }
     }
     Ok(result)

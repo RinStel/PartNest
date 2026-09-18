@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::Builder;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 8;
+pub const CURRENT_SCHEMA_VERSION: i64 = 12;
 pub const MAX_BACKUPS: usize = 10;
 pub const STARTUP_BACKUP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -184,6 +184,7 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
             "manufacturer",
             "mpn",
             "lcsc_code",
+            "deleted_at",
             "quantity",
             "box_id",
             "slot",
@@ -203,6 +204,20 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
         return Err(BackupError::Invalid("parts 约束不完整".into()));
     }
     require_index(connection, "parts", "parts_lcsc_code_unique")?;
+    let lcsc_index: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'parts_lcsc_code_unique'",
+        [],
+        |row| row.get(0),
+    )?;
+    let lcsc_index = normalized_sql(&lcsc_index);
+    if !lcsc_index.contains("createuniqueindex")
+        || !lcsc_index.contains("onparts(lcsc_codecollatenocase)")
+        || !lcsc_index.contains("wheredeleted_atisnullandlcsc_codeisnotnullandtrim(lcsc_code)<>''")
+    {
+        return Err(BackupError::Invalid(
+            "parts 活动器件 LCSC 唯一索引不完整".into(),
+        ));
+    }
     require_table(
         connection,
         "lcsc_cache",
@@ -219,20 +234,23 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
 
     require_table(
         connection,
-        "bom_files",
+        "projects",
         &[
             "id",
+            "name",
             "original_name",
-            "display_name",
             "sha256",
             "cache_name",
             "created_at",
+            "kind",
+            "has_table",
+            "normalized_json",
         ],
     )?;
     require_table(
         connection,
         "welding_sessions",
-        &["id", "bom_file_id", "status", "created_at", "updated_at"],
+        &["id", "project_id", "status", "created_at", "updated_at"],
     )?;
     let progress_sql = require_table(
         connection,
