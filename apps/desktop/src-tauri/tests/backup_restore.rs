@@ -31,7 +31,7 @@ fn seed_database(path: &std::path::Path) -> Database {
         .unwrap();
     db.connection()
         .execute(
-            "INSERT INTO projects (id, name, original_name, sha256, cache_name) VALUES ('project-1', 'Board note', 'board.html', 'hash', 'hash.html')",
+            "INSERT INTO projects (id, name, original_name, sha256, cache_name, kind) VALUES ('project-1', 'Board note', 'board.html', 'hash', 'hash.html', 'tabular')",
             [],
         )
         .unwrap();
@@ -567,4 +567,28 @@ fn backup_validation_rejects_missing_archive_column_or_unscoped_lcsc_index() {
         validate_backup(&backup),
         Err(BackupError::Invalid(_))
     ));
+}
+
+#[test]
+fn restores_version_12_backup_without_modifying_the_selected_file() {
+    let root = tempdir().unwrap();
+    let old_path = root.path().join("old.db");
+    let migrations = partnest_desktop_lib::db::migrations();
+    let old = Database::open_with_migrations(&old_path, &migrations[..12]).unwrap();
+    old.connection()
+        .execute(
+            "INSERT INTO boxes (name, rows, cols) VALUES ('Old', 2, 2)",
+            [],
+        )
+        .unwrap();
+    old.connection()
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;")
+        .unwrap();
+    drop(old);
+    let original = fs::read(&old_path).unwrap();
+    let mut live = Database::open(root.path().join("live.db")).unwrap();
+    restore_database_file(&mut live, &old_path).unwrap();
+    assert_eq!(fs::read(&old_path).unwrap(), original);
+    assert_eq!(count(live.path(), "boxes"), 1);
+    assert_eq!(validate_backup(live.path()).unwrap().schema_version, 13);
 }

@@ -193,3 +193,135 @@ fn a_supplemented_canvas_that_belongs_to_another_project_is_refused() {
     );
     assert_eq!(project_record(&db, &other.project_id).unwrap(), before);
 }
+
+#[test]
+fn reimport_cannot_overwrite_an_active_or_previously_taken_project() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache = InteractiveBomCache::new(&db, root.path().join("cache"));
+    let (html, csv) = sources(root.path());
+    let imported = cache.import_project(&html, None, None, Some(&csv)).unwrap();
+    let before = project_record(&db, &imported.project_id).unwrap();
+    let session = cache.open_project_welding(&imported.project_id).unwrap();
+    assert!(cache.import_project(&html, None, None, None).is_err());
+    assert_eq!(project_record(&db, &imported.project_id).unwrap(), before);
+    db.connection().execute(
+        "INSERT INTO welding_progress (id, session_id, component_key, side, required_quantity, taken_quantity) VALUES (?1, ?2, 'part:R', 'top', 1, 1)",
+        rusqlite::params![new_id(), session.session_id],
+    ).unwrap();
+    db.connection()
+        .execute("UPDATE welding_sessions SET status = 'completed'", [])
+        .unwrap();
+    assert!(cache.import_project(&html, None, None, None).is_err());
+    assert_eq!(project_record(&db, &imported.project_id).unwrap(), before);
+}
+
+#[test]
+fn import_and_supplement_survive_an_unwritable_render_cache() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache_dir = root.path().join("cache");
+    std::fs::write(&cache_dir, "blocks directory creation").unwrap();
+    let cache = InteractiveBomCache::new(&db, &cache_dir);
+    let (html, csv) = sources(root.path());
+    let imported = cache.import_project(&html, None, None, None).unwrap();
+    cache
+        .supplement_project(&imported.project_id, &csv, None)
+        .unwrap();
+    assert!(cache.open_project_welding(&imported.project_id).is_err());
+    std::fs::remove_file(&cache_dir).unwrap();
+    std::fs::remove_file(&html).unwrap();
+    std::fs::remove_file(&csv).unwrap();
+    let session = cache.open_project_welding(&imported.project_id).unwrap();
+    assert_eq!(session.normalized.groups[0].lcsc_code, "C999");
+}
+
+#[test]
+fn failed_supplement_does_not_change_the_canvas_or_snapshot() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache = InteractiveBomCache::new(&db, root.path().join("cache"));
+    let (html, csv) = sources(root.path());
+    let imported = cache.import_project(&html, None, None, None).unwrap();
+    let before = project_record(&db, &imported.project_id).unwrap();
+    db.connection().execute_batch("CREATE TRIGGER reject_project_update BEFORE UPDATE ON projects BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+    assert!(cache
+        .supplement_project(&imported.project_id, &csv, None)
+        .is_err());
+    assert_eq!(project_record(&db, &imported.project_id).unwrap(), before);
+    let session = cache.open_project_welding(&imported.project_id).unwrap();
+    assert_eq!(session.normalized, imported.normalized);
+}
+
+#[test]
+fn backup_restores_interactive_sources_without_originals_or_cache() {
+    use partnest_desktop_lib::backup::{create_backup, restore_database_file};
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache = InteractiveBomCache::new(&db, root.path().join("cache"));
+    let (html, csv) = sources(root.path());
+    let imported = cache.import_project(&html, None, None, Some(&csv)).unwrap();
+    let backup = create_backup(&db, root.path().join("backups")).unwrap();
+    let other = tempdir().unwrap();
+    let mut restored = Database::open(other.path().join("partnest.db")).unwrap();
+    restore_database_file(&mut restored, &backup).unwrap();
+    let session = InteractiveBomCache::new(&restored, other.path().join("cache"))
+        .open_project_welding(&imported.project_id)
+        .unwrap();
+    assert_eq!(session.normalized, imported.normalized);
+    assert!(session.cache_path.unwrap().is_file());
+}
+
+#[test]
+fn failed_asset_write_rolls_back_the_project() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache = InteractiveBomCache::new(&db, root.path().join("cache"));
+    let (html, csv) = sources(root.path());
+    db.connection().execute_batch("CREATE TRIGGER reject_asset BEFORE INSERT ON project_assets BEGIN SELECT RAISE(ABORT, 'injected asset failure'); END;").unwrap();
+    assert!(cache.import_project(&html, None, None, Some(&csv)).is_err());
+    assert!(project_ids(&db).is_empty());
+}
+
+#[test]
+fn backup_imports_verified_legacy_canvas_and_rejects_missing_source() {
+    use partnest_desktop_lib::backup::create_backup;
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache_dir = root.path().join("interactive-bom-cache");
+    let cache = InteractiveBomCache::new(&db, &cache_dir);
+    let (html, csv) = sources(root.path());
+    let imported = cache.import_project(&html, None, None, Some(&csv)).unwrap();
+    let session = cache.open_project_welding(&imported.project_id).unwrap();
+    db.connection()
+        .execute("DELETE FROM project_assets", [])
+        .unwrap();
+    create_backup(&db, root.path().join("backups")).unwrap();
+    assert_eq!(
+        db.connection()
+            .query_row("SELECT count(*) FROM project_assets", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    db.connection()
+        .execute("DELETE FROM project_assets", [])
+        .unwrap();
+    std::fs::remove_file(session.cache_path.unwrap()).unwrap();
+    assert!(create_backup(&db, root.path().join("backups")).is_err());
+}
+
+#[test]
+fn prepared_supplement_rechecks_session_state_at_commit() {
+    use partnest_desktop_lib::bom::imports::{commit_supplement, prepare_supplement};
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache = InteractiveBomCache::new(&db, root.path().join("cache"));
+    let (html, csv) = sources(root.path());
+    let imported = cache.import_project(&html, None, None, None).unwrap();
+    let (record, source) = cache.supplement_context(&imported.project_id).unwrap();
+    let prepared = prepare_supplement(record, source, &csv, None).unwrap();
+    cache.open_project_welding(&imported.project_id).unwrap();
+    assert!(commit_supplement(&db, prepared).is_err());
+    assert!(!project_record(&db, &imported.project_id).unwrap().has_table);
+}

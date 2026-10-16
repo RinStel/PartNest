@@ -2,8 +2,8 @@
 
 use crate::{
     bom::types::BomSide,
-    commands::CommandError,
     db::{new_id, utc_now, Database},
+    error::CommandError,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};

@@ -51,7 +51,7 @@ fn active_sessions(db: &Database) -> i64 {
 }
 
 #[test]
-fn importing_a_project_caches_its_canvas_without_touching_the_session() {
+fn importing_a_project_stores_assets_without_touching_the_session() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let cache_dir = root.path().join("cache");
@@ -71,8 +71,8 @@ fn importing_a_project_caches_its_canvas_without_touching_the_session() {
     );
     assert_eq!(
         cache_entries(&cache_dir),
-        1,
-        "the project keeps its own bridged canvas"
+        0,
+        "render files are created only when opening the workspace"
     );
     assert_eq!(
         active_sessions(&db),
@@ -108,7 +108,7 @@ fn previewing_an_interactive_bom_caches_nothing_and_keeps_the_active_session() {
 }
 
 #[test]
-fn restoring_a_deleted_cache_file_asks_the_operator_to_import_the_project_again() {
+fn restoring_a_deleted_cache_file_rebuilds_from_stored_assets() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let cache_dir = root.path().join("cache");
@@ -116,11 +116,12 @@ fn restoring_a_deleted_cache_file_asks_the_operator_to_import_the_project_again(
     let session = open_project(&cache, &fixture(), None);
     fs::remove_file(cached_path(&session)).unwrap();
 
-    let error = InteractiveBomCache::new(&db, &cache_dir)
+    let restored = InteractiveBomCache::new(&db, &cache_dir)
         .restore_active_session()
-        .expect_err("a deleted cache copy must be reported, not silently ignored");
-    assert!(matches!(error, CacheError::MissingCache(_)));
-    assert!(error.user_message().contains("重新导入"));
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.session_id, session.session_id);
+    assert!(cached_path(&restored).is_file());
 }
 
 #[test]
@@ -206,7 +207,7 @@ fn bootstraps_current_token_and_repairs_tampered_cache() {
     assert!(serde_json::from_str::<serde_json::Value>(config).is_ok());
     assert!(!config.contains("</script>"));
     fs::write(cached_path(&first), "tampered").unwrap();
-    let second = open_project(&cache, &fixture(), None);
+    let second = cache.open_project_welding(&first.project_id).unwrap();
     let repaired = fs::read_to_string(cached_path(&second)).unwrap();
     assert!(repaired.contains(&second.token));
     assert!(repaired.contains("bridge-v1"));
@@ -314,13 +315,15 @@ fn rejects_untrusted_cache_name_that_escapes_cache_directory() {
 }
 
 #[test]
-fn reimporting_the_same_content_updates_the_project_and_keeps_one_session() {
+fn renaming_an_active_project_keeps_one_session() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let cache_dir = root.path().join("cache");
     let cache = InteractiveBomCache::new(&db, &cache_dir);
     let first = open_project(&cache, &fixture(), Some("First name"));
-    let second = open_project(&cache, &fixture(), Some("Second name"));
+    partnest_desktop_lib::bom::projects::rename_project(&db, &first.project_id, "Second name")
+        .unwrap();
+    let second = cache.open_project_welding(&first.project_id).unwrap();
     assert_eq!(first.session_id, second.session_id);
     assert_eq!(first.project_id, second.project_id);
     assert_eq!(

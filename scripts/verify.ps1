@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = "Stop"
@@ -16,11 +16,11 @@ try {
 
     Invoke-PnCommand "pnpm test"
     Invoke-PnCommand "pnpm build"
-    Invoke-PnCommand "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml" -VsDevCmdPath $vsDevCmdPath
-    Invoke-PnCommand "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --offline -- -D warnings" -VsDevCmdPath $vsDevCmdPath
+    Invoke-PnCommand "cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml" -VsDevCmdPath $vsDevCmdPath
+    Invoke-PnCommand "cargo clippy --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings" -VsDevCmdPath $vsDevCmdPath
     Invoke-PnCommand "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check"
     Invoke-PnCommand ".\node_modules\.bin\tsc.CMD -p apps/desktop/tsconfig.json --noEmit"
-    Invoke-PnCommand "pnpm --filter @partnest/desktop tauri build" -VsDevCmdPath $vsDevCmdPath
+    Invoke-PnCommand "pnpm --filter @partnest/desktop tauri build --no-bundle -- --locked" -VsDevCmdPath $vsDevCmdPath
     Invoke-PnCommand "git diff --check"
 }
 catch {

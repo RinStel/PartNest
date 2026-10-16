@@ -1,47 +1,25 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { BomGroup, InventoryPart, MatchResult } from "@partnest/domain";
 import { matchBomGroup } from "@partnest/domain";
-import { desktopApi, type ImportedProject, type Part, type ProjectSummary } from "../../app/tauri";
+import { desktopApi, type ImportedProject, type Part, type ProjectSummary, type CachedBomSession, type BomGroup as BomGroupDto, type NormalizedBom as NormalizedBomDto, type FieldName, type FieldMapping, type ImportPreview } from "../../app/tauri";
 import { useCallback, useRef, useState } from "react";
 
-export type FieldName = "quantity" | "designators" | "name" | "value" | "package" | "manufacturer" | "mpn" | "lcsc_code" | "side";
-export type FieldMapping = Partial<Record<FieldName, string>>;
-export type BomGroupDto = {
-  component_key?: string;
-  componentKey?: string;
-  name: string;
-  value: string;
-  package: string;
-  manufacturer?: string;
-  mpn?: string;
-  lcsc_code?: string;
-  lcscCode?: string;
-  quantity: number;
-  designators?: string[];
-  placements?: Array<{ designator: string; side: string | null }>;
-  extra_fields?: Record<string, string>;
-  extraFields?: Record<string, string>;
-};
-export type NormalizedBomDto = { source_name: string; groups: BomGroupDto[] };
-export type ImportPreview =
-  | { kind: "Ready"; bom: NormalizedBomDto }
-  | { kind: "NeedsMapping"; headers: string[]; suggestions: FieldMapping }
-  | { kind: "Unsupported"; message?: string };
+export type { FieldName, FieldMapping, ImportPreview } from "../../app/contracts";
+export type { BomGroup as BomGroupDto, NormalizedBom as NormalizedBomDto } from "../../app/contracts";
 
 export type ProjectImportApi = {
-  inspectTabularBom: (sourcePath: string, mapping?: FieldMapping) => Promise<unknown>;
+  inspectTabularBom: (sourcePath: string, mapping?: FieldMapping) => Promise<ImportPreview>;
   /** Read-only analysis of an interactive BOM: nothing is stored or switched. */
-  previewInteractiveBom: (sourcePath: string, companionPath?: string) => Promise<unknown>;
+  previewInteractiveBom: (sourcePath: string, companionPath?: string) => Promise<ImportPreview>;
   /** Store the analysed file as a project; the only write this page makes. */
   importProject: (input: { source_path: string; name?: string; mapping?: FieldMapping; companion_path?: string }) => Promise<ImportedProject>;
   /** Merge the source an existing project is still missing. */
   supplementProject: (input: { project_id: string; source_path: string; mapping?: FieldMapping }) => Promise<ImportedProject>;
   listParts: () => Promise<Part[]>;
   listProjects?: () => Promise<ProjectSummary[]>;
-  analyzeProject?: (id: string) => Promise<unknown>;
+  analyzeProject?: (id: string) => Promise<ImportPreview>;
   renameProject?: (id: string, name: string) => Promise<ProjectSummary>;
   removeProject?: (id: string) => Promise<void>;
-  openProjectWelding?: (id: string) => Promise<unknown>;
+  openProjectWelding?: (id: string) => Promise<CachedBomSession>;
 };
 
 export type BomAnalysisRow = {
@@ -60,12 +38,12 @@ export type BomAnalysisRow = {
   candidateIds?: string[];
 };
 
-const supported = new Set([".html", ".csv", ".xlsx"]);
+const supported = new Set([".html", ".csv", ".xls", ".xlsx"]);
 const fieldNames: FieldName[] = ["quantity", "designators", "name", "value", "package", "manufacturer", "mpn", "lcsc_code", "side"];
 
 const defaultApi: ProjectImportApi = {
-  inspectTabularBom: (sourcePath, mapping) => invoke("inspect_tabular_bom", { sourcePath, mapping }),
-  previewInteractiveBom: (sourcePath, companionPath) => invoke("preview_interactive_bom", { sourcePath, companionPath }),
+  inspectTabularBom: (sourcePath, mapping) => desktopApi.inspectTabularBom(sourcePath, mapping),
+  previewInteractiveBom: (sourcePath, companionPath) => desktopApi.previewInteractiveBom(sourcePath, companionPath),
   importProject: (input) => desktopApi.importProject(input),
   supplementProject: (input) => desktopApi.supplementProject(input),
   listParts: () => desktopApi.listParts(),
@@ -77,29 +55,8 @@ const defaultApi: ProjectImportApi = {
 };
 
 
-type PreviewPayload = {
-  kind?: "Ready" | "NeedsMapping";
-  bom?: NormalizedBomDto;
-  normalized?: NormalizedBomDto;
-  Ready?: NormalizedBomDto;
-  NeedsMapping?: { headers: string[]; suggestions: FieldMapping };
-  headers?: string[];
-  suggestions?: FieldMapping;
-  message?: string;
-};
-
-function toPreview(value: unknown): ImportPreview {
-  const payload = (value && typeof value === "object" ? value : {}) as PreviewPayload;
-  if (payload.kind === "Ready" && payload.bom) return { kind: "Ready", bom: payload.bom };
-  if (payload.kind === "NeedsMapping" && payload.headers && payload.suggestions) return { kind: "NeedsMapping", headers: payload.headers, suggestions: payload.suggestions };
-  if (payload.normalized) return { kind: "Ready", bom: payload.normalized };
-  if (payload.Ready) return { kind: "Ready", bom: payload.Ready };
-  if (payload.NeedsMapping) return { kind: "NeedsMapping", ...payload.NeedsMapping };
-  return { kind: "Unsupported", message: payload.message };
-}
-
 function normalizedGroup(group: BomGroupDto): BomGroup {
-  const componentKey = group.componentKey ?? group.component_key ?? "";
+  const componentKey = group.component_key;
   return {
     componentKey,
     name: group.name ?? "",
@@ -107,12 +64,12 @@ function normalizedGroup(group: BomGroupDto): BomGroup {
     package: group.package ?? "",
     manufacturer: group.manufacturer ?? "",
     mpn: group.mpn ?? "",
-    lcscCode: group.lcscCode ?? group.lcsc_code ?? "",
+    lcscCode: group.lcsc_code,
     placements: (group.placements ?? []).flatMap((placement) =>
       placement.side === "top" || placement.side === "bottom"
         ? [{ designator: placement.designator, side: placement.side, componentKey }]
         : []),
-    extraFields: group.extraFields ?? group.extra_fields ?? {},
+    extraFields: group.extra_fields,
   };
 }
 
@@ -124,7 +81,7 @@ export function createAnalysisRows(bom: NormalizedBomDto, parts: Part[], confirm
   const inventory = parts.map(partAsInventory);
   const byId = new Map(parts.map((part) => [part.id, part]));
   return bom.groups.map((group) => {
-    const key = group.componentKey ?? group.component_key ?? `${group.name}|${group.value}|${group.package}`;
+    const key = group.component_key;
     const selected = confirmed[key];
     const rawMatch = selected ? { kind: "exact-mpn" as const, partId: selected } : matchBomGroup(normalizedGroup(group), inventory);
     const match = rawMatch;
@@ -203,18 +160,15 @@ export function useProjectImport({ api = defaultApi }: { api?: ProjectImportApi 
   /** Analyse a picked file. Previewing stores nothing and never switches sessions. */
   const inspect = useCallback(async (sourcePath: string, supplied?: FieldMapping, suppliedCompanionPath = companionPath, thenImport = false) => {
     const extension = sourcePath.slice(sourcePath.lastIndexOf(".")).toLowerCase();
-    if (!supported.has(extension)) { setStatus("error"); setError("不支持的 BOM 格式，请选择 HTML、CSV 或 XLSX 文件"); return false; }
+    if (!supported.has(extension)) { setStatus("error"); setError("不支持的 BOM 格式，请选择 HTML、CSV、XLS 或 XLSX 文件"); return false; }
     setPath(sourcePath); setError(""); setStatus("loading"); setProject(null);
     try {
       const result = extension === ".html"
-        ? toPreview(await (suppliedCompanionPath
-          ? api.previewInteractiveBom(sourcePath, suppliedCompanionPath)
-          : api.previewInteractiveBom(sourcePath)))
-        : toPreview(await api.inspectTabularBom(sourcePath, supplied));
+        ? await api.previewInteractiveBom(sourcePath, suppliedCompanionPath || undefined)
+        : await api.inspectTabularBom(sourcePath, supplied);
       if (result.kind === "NeedsMapping") {
         setHeaders(result.headers); setMapping(result.suggestions ?? {}); setStatus("needsMapping"); return false;
       }
-      if (result.kind !== "Ready") { setStatus("error"); setError(result.message ?? "BOM 解析失败"); return false; }
       const listed = await api.listParts();
       showAnalysis({ bom: result.bom, parts: listed, rows: createAnalysisRows(result.bom, listed) });
       // A file the operator picked to import is stored as soon as it parses.
@@ -228,8 +182,8 @@ export function useProjectImport({ api = defaultApi }: { api?: ProjectImportApi 
     autoImportRef.current = false;
     setStatus("loading"); setError(""); setPath(""); setCompanionPath("");
     try {
-      const result = toPreview(await api.analyzeProject(summary.id));
-      if (result.kind !== "Ready") { setStatus("error"); setError(result.kind === "Unsupported" ? result.message ?? "无法读取该项目的解析结果" : "该项目的解析结果需要重新映射，请重新导入原始文件"); return; }
+      const result = await api.analyzeProject(summary.id);
+      if (result.kind !== "Ready") { setStatus("error"); setError("该项目的解析结果需要重新映射，请重新导入原始文件"); return; }
       const listed = await api.listParts();
       setProject({ id: summary.id, name: summary.name });
       showAnalysis({ bom: result.bom, parts: listed, rows: createAnalysisRows(result.bom, listed) });

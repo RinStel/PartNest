@@ -178,13 +178,43 @@ pub fn record_project(
     with_table: bool,
     normalized: &NormalizedBomDto,
 ) -> Result<ProjectRecord, ProjectError> {
+    record_project_with_digest(
+        db,
+        source_path,
+        &hex::encode(Sha256::digest(bytes)),
+        name,
+        kind,
+        with_table,
+        normalized,
+    )
+}
+
+pub(super) fn record_project_with_digest(
+    db: &Database,
+    source_path: &Path,
+    sha256: &str,
+    name: Option<&str>,
+    kind: ProjectKind,
+    with_table: bool,
+    normalized: &NormalizedBomDto,
+) -> Result<ProjectRecord, ProjectError> {
     let original_name = source_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default()
         .to_owned();
-    let sha256 = hex::encode(Sha256::digest(bytes));
-    let cache_name = cache_name(kind, &sha256, source_path)?;
+    let cache_name = cache_name(kind, sha256, source_path)?;
+    let existing: Option<String> = db
+        .connection()
+        .query_row(
+            "SELECT id FROM projects WHERE sha256 = ?1",
+            [&sha256],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = existing {
+        ensure_project_mutable(db, &id)?;
+    }
     let provided = name.map(str::trim).filter(|name| !name.is_empty());
     let snapshot = serde_json::to_string(normalized)
         .map_err(|error| ProjectError::InvalidSnapshot(error.to_string()))?;
@@ -204,7 +234,7 @@ pub fn record_project(
             provided,
         ],
     )?;
-    project_by_sha256(db, &sha256)
+    project_by_sha256(db, sha256)
 }
 
 /// A new project is named after its file without the extension; the list shows
@@ -310,6 +340,12 @@ pub fn ensure_supplementable(
     if record.missing_source().is_none() {
         return Err(ProjectError::AlreadyComplete);
     }
+    ensure_project_mutable(db, project_id)?;
+    Ok(record)
+}
+
+/// Both reimport and supplementary import change the meaning of recorded takes.
+pub fn ensure_project_mutable(db: &Database, project_id: &str) -> Result<(), ProjectError> {
     let active: bool = db.connection().query_row(
         "SELECT EXISTS(SELECT 1 FROM welding_sessions WHERE project_id = ?1 AND status = 'active')",
         [project_id],
@@ -326,7 +362,7 @@ pub fn ensure_supplementable(
     if started {
         return Err(ProjectError::TakesExist);
     }
-    Ok(record)
+    Ok(())
 }
 
 /// Store the merged result of a supplementary import on the project itself.

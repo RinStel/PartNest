@@ -2,6 +2,7 @@ pub mod backup;
 pub mod bom;
 pub mod commands;
 pub mod db;
+pub mod error;
 
 use bom::cache::InteractiveBomRuntime;
 use db::Database;

@@ -1,16 +1,13 @@
-//! Immutable source caching and active interactive BOM session metadata.
+//! Disposable render caching and active interactive BOM session metadata.
 
 use super::{
     bridge::{constant_time_eq, validate_token_and_designators, BridgeError},
     interactive_html::{
         parse_interactive_html_text_with_companion, InteractiveHtmlError, MAX_INTERACTIVE_BOM_BYTES,
     },
-    projects::{
-        apply_supplement, ensure_supplementable, project_record, record_project, ProjectError,
-        ProjectKind, ProjectRecord,
-    },
-    tabular::{inspect_tabular_bom, parse_tabular_bom, TabularError},
-    types::{BomSide, FieldMapping, ImportPreview, NormalizedBomDto},
+    projects::{ensure_supplementable, project_record, ProjectError, ProjectKind, ProjectRecord},
+    tabular::{parse_tabular_bom, TabularError},
+    types::{BomSide, FieldMapping, NormalizedBomDto},
 };
 use crate::db::{new_id, Database};
 use rusqlite::OptionalExtension;
@@ -171,7 +168,6 @@ struct ReopenedCanvas {
 
 /// A verified cached canvas, free of the bridge payload.
 struct CachedCanvas {
-    cache_path: PathBuf,
     source: Vec<u8>,
     companion: Option<NormalizedBomDto>,
 }
@@ -341,9 +337,7 @@ impl<'db> InteractiveBomCache<'db> {
         }
     }
 
-    /// Import a BOM file as a project. An interactive BOM also gets its bridged
-    /// canvas copy written here, so opening the workspace later on never needs
-    /// the original file again.
+    /// Store the project and its durable sources; rendering happens on open.
     pub fn import_project(
         &self,
         source_path: &Path,
@@ -351,164 +345,33 @@ impl<'db> InteractiveBomCache<'db> {
         mapping: Option<&FieldMapping>,
         companion_path: Option<&Path>,
     ) -> Result<ImportedProject, CacheError> {
-        let kind = ProjectKind::from_source_path(source_path)?;
-        let (bytes, original_name) = read_source(source_path, kind)?;
-        let (normalized, companion) = match kind {
-            ProjectKind::Interactive => {
-                parse_interactive_source(&bytes, &original_name, companion_path)?
-            }
-            ProjectKind::Tabular => match inspect_tabular_bom(source_path, mapping)? {
-                ImportPreview::Ready(normalized) => (normalized, None),
-                // The import dialog resolves mapping before calling, so this is
-                // a guard against a stale mapping rather than a user flow.
-                ImportPreview::NeedsMapping { .. } => return Err(CacheError::NeedsMapping),
-            },
-        };
-        let record = record_project(
-            self.db,
-            source_path,
-            &bytes,
-            name,
-            kind,
-            companion.is_some(),
-            &normalized,
-        )?;
-        if kind == ProjectKind::Interactive {
-            // The token baked into a freshly imported canvas is never published;
-            // opening the project mints the one the bridge has to present.
-            let cache_path = validate_cache_path(&self.cache_dir, &record.cache_name)?;
-            self.write_cache_atomically(
-                &cache_path,
-                &bytes,
-                &Uuid::new_v4().to_string(),
-                &bindings(&normalized)?,
-                companion.as_ref(),
-            )?;
-        }
-        Ok(ImportedProject {
-            project_id: record.id,
-            name: record.name,
-            original_name: record.original_name,
-            cache_name: record.cache_name,
-            kind: record.kind,
-            has_table: record.has_table,
-            normalized,
-        })
+        let prepared = super::imports::prepare_import(source_path, mapping, companion_path)?;
+        super::imports::commit_import(self.db, prepared, name)
     }
 
-    /// Add the source a project is still missing: a parts table merged into its
-    /// cached canvas, or a canvas built on top of its stored table analysis.
+    /// Snapshot only the inputs needed for lock-free supplementary parsing.
+    pub fn supplement_context(
+        &self,
+        project_id: &str,
+    ) -> Result<(ProjectRecord, Option<Vec<u8>>), CacheError> {
+        let record = ensure_supplementable(self.db, project_id)?;
+        let source = if record.kind == ProjectKind::Interactive {
+            Some(self.cached_canvas(&record)?.source)
+        } else {
+            None
+        };
+        Ok((record, source))
+    }
+
     pub fn supplement_project(
         &self,
         project_id: &str,
         source_path: &Path,
         mapping: Option<&FieldMapping>,
     ) -> Result<ImportedProject, CacheError> {
-        let record = ensure_supplementable(self.db, project_id)?;
-        let supplied = ProjectKind::from_source_path(source_path)?;
-        if record.missing_source() != Some(supplied) {
-            return Err(CacheError::Project(ProjectError::SuppliesWrongSource(
-                match record.missing_source() {
-                    Some(ProjectKind::Tabular) => "需要器件表格（CSV / XLS / XLSX）".into(),
-                    Some(ProjectKind::Interactive) => "需要可交互式 BOM（HTML）".into(),
-                    None => String::new(),
-                },
-            )));
-        }
-        let (record, normalized) = match supplied {
-            ProjectKind::Tabular => self.attach_table(&record, source_path, mapping)?,
-            ProjectKind::Interactive => self.attach_canvas(&record, source_path)?,
-        };
-        Ok(ImportedProject {
-            project_id: record.id.clone(),
-            name: record.name.clone(),
-            original_name: record.original_name.clone(),
-            cache_name: record.cache_name.clone(),
-            kind: record.kind,
-            has_table: record.has_table,
-            normalized,
-        })
-    }
-
-    /// Merge a parts table into the project's cached canvas and store the result.
-    fn attach_table(
-        &self,
-        record: &ProjectRecord,
-        table_path: &Path,
-        mapping: Option<&FieldMapping>,
-    ) -> Result<(ProjectRecord, NormalizedBomDto), CacheError> {
-        let companion = match inspect_tabular_bom(table_path, mapping)? {
-            ImportPreview::Ready(normalized) => normalized,
-            ImportPreview::NeedsMapping { .. } => return Err(CacheError::NeedsMapping),
-        };
-        let canvas = self.cached_canvas(record)?;
-        let source_text = std::str::from_utf8(&canvas.source)
-            .map_err(|error| CacheError::TamperedCache(error.to_string()))?;
-        let normalized = parse_interactive_html_text_with_companion(
-            source_text,
-            record.original_name.clone(),
-            Some(&companion),
-        )?;
-        // The table travels inside the cached copy, so a later restart rebuilds
-        // the same merge without the operator picking the file again.
-        self.write_cache_atomically(
-            &canvas.cache_path,
-            &canvas.source,
-            &Uuid::new_v4().to_string(),
-            &bindings(&normalized)?,
-            Some(&companion),
-        )?;
-        let record = apply_supplement(
-            self.db,
-            &record.id,
-            ProjectKind::Interactive,
-            &record.sha256,
-            &record.cache_name,
-            &normalized,
-        )?;
-        Ok((record, normalized))
-    }
-
-    /// Cache an interactive export as the project's canvas, keeping the analysis
-    /// it already stored as the parts table.
-    fn attach_canvas(
-        &self,
-        record: &ProjectRecord,
-        html_path: &Path,
-    ) -> Result<(ProjectRecord, NormalizedBomDto), CacheError> {
-        let (bytes, original_name) = read_source(html_path, ProjectKind::Interactive)?;
-        let companion = record.snapshot()?;
-        let source_text = std::str::from_utf8(&bytes).map_err(|error| {
-            CacheError::Parse(InteractiveHtmlError::UnsupportedInteractiveBom(
-                error.to_string(),
-            ))
-        })?;
-        let normalized = parse_interactive_html_text_with_companion(
-            source_text,
-            original_name,
-            Some(&companion),
-        )?;
-        let sha256 = hex::encode(Sha256::digest(&bytes));
-        let cache_name = format!("{sha256}.html");
-        // Record first: a canvas that belongs to another project must not be
-        // written over before that clash is reported.
-        let record = apply_supplement(
-            self.db,
-            &record.id,
-            ProjectKind::Interactive,
-            &sha256,
-            &cache_name,
-            &normalized,
-        )?;
-        let cache_path = validate_cache_path(&self.cache_dir, &cache_name)?;
-        self.write_cache_atomically(
-            &cache_path,
-            &bytes,
-            &Uuid::new_v4().to_string(),
-            &bindings(&normalized)?,
-            Some(&companion),
-        )?;
-        Ok((record, normalized))
+        let (record, source) = self.supplement_context(project_id)?;
+        let prepared = super::imports::prepare_supplement(record, source, source_path, mapping)?;
+        super::imports::commit_supplement(self.db, prepared)
     }
 
     pub fn resolve_bom_selection(
@@ -595,24 +458,19 @@ impl<'db> InteractiveBomCache<'db> {
     /// the designator bindings the host trusts for that canvas.
     fn reopen_canvas(&self, record: &ProjectRecord) -> Result<ReopenedCanvas, CacheError> {
         let canvas = self.cached_canvas(record)?;
-        let source_text = std::str::from_utf8(&canvas.source)
-            .map_err(|error| CacheError::TamperedCache(error.to_string()))?;
-        let normalized = parse_interactive_html_text_with_companion(
-            source_text,
-            record.original_name.clone(),
-            canvas.companion.as_ref(),
-        )?;
+        let normalized = record.snapshot()?;
         let token = Uuid::new_v4().to_string();
         let designators = bindings(&normalized)?;
+        let cache_path = validate_cache_path(&self.cache_dir, &record.cache_name)?;
         self.write_cache_atomically(
-            &canvas.cache_path,
+            &cache_path,
             &canvas.source,
             &token,
             &designators,
             canvas.companion.as_ref(),
         )?;
         Ok(ReopenedCanvas {
-            cache_path: canvas.cache_path,
+            cache_path,
             token,
             normalized,
         })
@@ -621,6 +479,13 @@ impl<'db> InteractiveBomCache<'db> {
     /// The project's cached export, stripped of the bridge payload, together
     /// with the companion table that was merged into it.
     fn cached_canvas(&self, record: &ProjectRecord) -> Result<CachedCanvas, CacheError> {
+        validate_cache_name(&record.cache_name)?;
+        if let Some(asset) = super::assets::load(self.db, record)? {
+            return Ok(CachedCanvas {
+                source: asset.source,
+                companion: asset.companion,
+            });
+        }
         let cache_path = validate_cache_path(&self.cache_dir, &record.cache_name)?;
         let cached = fs::read(&cache_path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -640,11 +505,35 @@ impl<'db> InteractiveBomCache<'db> {
             ));
         }
         let companion = read_cached_companion(&cached[marker_index..])?;
-        Ok(CachedCanvas {
-            cache_path,
-            source,
-            companion,
-        })
+        // Upgrade old installations only after checking the old source and snapshot.
+        let parsed = parse_interactive_html_text_with_companion(
+            std::str::from_utf8(&source).map_err(|e| CacheError::TamperedCache(e.to_string()))?,
+            record.original_name.clone(),
+            companion.as_ref(),
+        )?;
+        if parsed.groups != record.snapshot()?.groups {
+            return Err(CacheError::TamperedCache(
+                "legacy canvas differs from project snapshot".into(),
+            ));
+        }
+        super::assets::store(self.db, &record.id, &source, companion.as_ref())?;
+        Ok(CachedCanvas { source, companion })
+    }
+
+    /// Import verified legacy render files before producing a portable backup.
+    pub fn preserve_project_assets(&self) -> Result<(), CacheError> {
+        let ids = self
+            .db
+            .connection()
+            .prepare("SELECT id FROM projects WHERE kind = 'interactive'")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let tx = self.db.transaction()?;
+        for id in ids {
+            self.cached_canvas(&project_record(self.db, &id)?)?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Open the welding workspace for a project. Its already-active session is
@@ -772,8 +661,11 @@ pub fn preview_interactive_bom(
 }
 
 /// Read a source file, rejecting oversized interactive exports before they
-/// reach memory: callers hold the database lock for the whole command.
-fn read_source(source_path: &Path, kind: ProjectKind) -> Result<(Vec<u8>, String), CacheError> {
+/// reach memory. File preparation runs without the database lock.
+pub(super) fn read_source(
+    source_path: &Path,
+    kind: ProjectKind,
+) -> Result<(Vec<u8>, String), CacheError> {
     let size = fs::metadata(source_path)?.len();
     if kind == ProjectKind::Interactive && size > MAX_INTERACTIVE_BOM_BYTES as u64 {
         return Err(CacheError::Parse(InteractiveHtmlError::TooLarge(
@@ -789,7 +681,7 @@ fn read_source(source_path: &Path, kind: ProjectKind) -> Result<(Vec<u8>, String
     Ok((bytes, original_name))
 }
 
-fn parse_interactive_source(
+pub(super) fn parse_interactive_source(
     bytes: &[u8],
     original_name: &str,
     companion_path: Option<&Path>,
@@ -846,7 +738,7 @@ fn activate_session(tx: &rusqlite::Transaction<'_>, project_id: &str) -> rusqlit
     Ok(session_id)
 }
 
-fn validate_cache_path(cache_dir: &Path, cache_name: &str) -> Result<PathBuf, CacheError> {
+fn validate_cache_name(cache_name: &str) -> Result<(), CacheError> {
     let valid_name = cache_name.len() == 69
         && cache_name.ends_with(".html")
         && cache_name[..64]
@@ -859,6 +751,11 @@ fn validate_cache_path(cache_dir: &Path, cache_name: &str) -> Result<PathBuf, Ca
             "cache name must be a lowercase sha256 .html filename".into(),
         ));
     }
+    Ok(())
+}
+
+fn validate_cache_path(cache_dir: &Path, cache_name: &str) -> Result<PathBuf, CacheError> {
+    validate_cache_name(cache_name)?;
     fs::create_dir_all(cache_dir)?;
     let root = fs::canonicalize(cache_dir)?;
     let target = root.join(cache_name);

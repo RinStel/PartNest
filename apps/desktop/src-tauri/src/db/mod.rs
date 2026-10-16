@@ -83,6 +83,10 @@ pub fn migrations() -> Vec<Migration<'static>> {
             version: 12,
             sql: PROJECT_SOURCES_MIGRATION,
         },
+        Migration {
+            version: 13,
+            sql: include_str!("../../migrations/0013_project_assets.sql"),
+        },
     ]
 }
 

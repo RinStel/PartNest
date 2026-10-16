@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::Builder;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 12;
+pub const CURRENT_SCHEMA_VERSION: i64 = 13;
 pub const MAX_BACKUPS: usize = 10;
 pub const STARTUP_BACKUP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -156,7 +156,7 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
             "schema_migrations 必须包含连续且已识别的迁移版本".into(),
         ));
     }
-    if schema_version != CURRENT_SCHEMA_VERSION {
+    if !(12..=CURRENT_SCHEMA_VERSION).contains(&schema_version) {
         return Err(BackupError::Invalid(
             "备份 schema 不是当前应用可直接使用的完整版本".into(),
         ));
@@ -252,6 +252,19 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
         "welding_sessions",
         &["id", "project_id", "status", "created_at", "updated_at"],
     )?;
+    if schema_version >= 13 {
+        require_table(
+            connection,
+            "project_assets",
+            &["project_id", "source", "companion_json"],
+        )?;
+        let missing: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM projects p LEFT JOIN project_assets a ON a.project_id = p.id WHERE p.kind = 'interactive' AND a.project_id IS NULL)", [], |r| r.get(0))?;
+        if missing {
+            return Err(BackupError::Invalid(
+                "交互式项目缺少原始资料，不能生成或恢复完整备份".into(),
+            ));
+        }
+    }
     let progress_sql = require_table(
         connection,
         "welding_progress",
@@ -391,6 +404,14 @@ pub fn create_backup(
     database: &Database,
     backup_directory: impl AsRef<Path>,
 ) -> Result<PathBuf, BackupError> {
+    let cache_dir = database
+        .path()
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("interactive-bom-cache");
+    crate::bom::cache::InteractiveBomCache::new(database, cache_dir)
+        .preserve_project_assets()
+        .map_err(|e| BackupError::Invalid(e.user_message()))?;
     let backup_directory = backup_directory.as_ref();
     fs::create_dir_all(backup_directory)?;
     let temporary = Builder::new()
@@ -692,6 +713,18 @@ fn restore_database_file_inner(
         .tempfile_in(parent)?
         .into_temp_path();
     copy_database(&selected_canonical, &temporary)?;
+    {
+        let upgraded = Database::open(&temporary)?;
+        crate::bom::cache::InteractiveBomCache::new(
+            &upgraded,
+            parent.join("interactive-bom-cache"),
+        )
+        .preserve_project_assets()
+        .map_err(|e| BackupError::Invalid(e.user_message()))?;
+        upgraded
+            .connection()
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;")?;
+    }
     validate_backup(&temporary)?;
 
     database

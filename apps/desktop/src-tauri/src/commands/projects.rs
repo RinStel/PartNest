@@ -16,7 +16,7 @@ use crate::{
 };
 use serde::Serialize;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectSummary {
@@ -93,27 +93,24 @@ pub fn list_projects(database: State<'_, Mutex<Database>>) -> Result<Vec<Project
 /// Import a BOM file as a project. Analysis alone never changes the welding
 /// workspace; opening a project is the explicit step that does.
 #[tauri::command(rename = "import_project")]
-pub fn import_project(
+pub async fn import_project(
     input: ImportProjectInput,
-    database: State<'_, Mutex<Database>>,
-    runtime: State<'_, Mutex<InteractiveBomRuntime>>,
+    app: AppHandle,
 ) -> Result<ImportedProject, String> {
-    let database = database.lock().map_err(|_| "数据库锁不可用".to_owned())?;
-    let runtime = runtime
-        .lock()
-        .map_err(|_| "BOM 缓存状态锁不可用".to_owned())?;
-    runtime
-        .import_project(
-            &database,
+    tauri::async_runtime::spawn_blocking(move || {
+        let prepared = crate::bom::imports::prepare_import(
             std::path::Path::new(&input.source_path),
-            input.name.as_deref(),
             input.mapping.as_ref(),
-            input
-                .companion_path
-                .as_deref()
-                .map(std::path::Path::new),
+            input.companion_path.as_deref().map(std::path::Path::new),
         )
-        .map_err(|error| error.user_message())
+        .map_err(|e| e.user_message())?;
+        let state = app.state::<Mutex<Database>>();
+        let database = state.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+        crate::bom::imports::commit_import(&database, prepared, input.name.as_deref())
+            .map_err(|e| e.user_message())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Reopen a project's stored analysis without touching the welding session.
@@ -172,23 +169,31 @@ pub fn open_project_welding(
 /// Preview a tabular BOM. Nothing is stored: the operator confirms the mapping
 /// first and imports the project afterwards.
 #[tauri::command(rename = "inspect_tabular_bom")]
-pub fn inspect_tabular_bom(
+pub async fn inspect_tabular_bom(
     source_path: String,
     mapping: Option<FieldMapping>,
 ) -> Result<ImportPreview, String> {
-    inspect_tabular_bom_file(&source_path, mapping.as_ref()).map_err(|error| error.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        inspect_tabular_bom_file(&source_path, mapping.as_ref()).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Preview an interactive BOM without caching it or switching the session.
 #[tauri::command(rename = "preview_interactive_bom")]
-pub fn preview_interactive_bom_command(
+pub async fn preview_interactive_bom_command(
     source_path: String,
     companion_path: Option<String>,
 ) -> Result<ImportPreview, String> {
-    let companion_path = companion_path.as_deref().map(std::path::Path::new);
-    preview_interactive_bom(std::path::Path::new(&source_path), companion_path)
-        .map(ImportPreview::Ready)
-        .map_err(|error| error.user_message())
+    tauri::async_runtime::spawn_blocking(move || {
+        let companion_path = companion_path.as_deref().map(std::path::Path::new);
+        preview_interactive_bom(std::path::Path::new(&source_path), companion_path)
+            .map(ImportPreview::Ready)
+            .map_err(|error| error.user_message())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command(rename = "resolve_bom_selection")]
@@ -245,21 +250,32 @@ pub struct SupplementProjectInput {
 /// Complete a project with the source it was imported without: the parts table
 /// of an interactive project, or the interactive export of a table project.
 #[tauri::command(rename = "supplement_project")]
-pub fn supplement_project(
+pub async fn supplement_project(
     input: SupplementProjectInput,
-    database: State<'_, Mutex<Database>>,
-    runtime: State<'_, Mutex<InteractiveBomRuntime>>,
+    app: AppHandle,
 ) -> Result<ImportedProject, String> {
-    let database = database.lock().map_err(|_| "数据库锁不可用".to_owned())?;
-    let runtime = runtime
-        .lock()
-        .map_err(|_| "BOM 缓存状态锁不可用".to_owned())?;
-    runtime
-        .supplement_project(
-            &database,
-            &input.project_id,
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<Database>>();
+        let (record, source) = {
+            let database = state.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+            let runtime = app.state::<Mutex<InteractiveBomRuntime>>();
+            let runtime = runtime
+                .lock()
+                .map_err(|_| "BOM 缓存状态锁不可用".to_owned())?;
+            crate::bom::cache::InteractiveBomCache::new(&database, runtime.cache_dir())
+                .supplement_context(&input.project_id)
+                .map_err(|e| e.user_message())?
+        };
+        let prepared = crate::bom::imports::prepare_supplement(
+            record,
+            source,
             std::path::Path::new(&input.source_path),
             input.mapping.as_ref(),
         )
-        .map_err(|error| error.user_message())
+        .map_err(|e| e.user_message())?;
+        let database = state.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+        crate::bom::imports::commit_supplement(&database, prepared).map_err(|e| e.user_message())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
